@@ -12,6 +12,12 @@
 import numpy as np
 import cv2
 import streamlit as st
+import sys
+import importlib
+import procesamiento
+
+# Forzar la recarga de procesamiento para evitar problemas de caché en Streamlit Cloud
+importlib.reload(procesamiento)
 
 from procesamiento import (
     # Constante de configuración
