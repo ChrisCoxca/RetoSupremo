@@ -261,14 +261,14 @@ with st.sidebar:
     col_añadir, col_limpiar = st.columns(2)
 
     with col_añadir:
-        if st.button("➕ Añadir filtro", use_container_width=True):
+        if st.button("➕ Añadir filtro", key="btn_add_filtro"):
             st.session_state["historial_filtros"].append(
                 dict(config_nuevo)   # copia del dict para evitar referencias
             )
             st.toast(f"Filtro '{filtro_elegido}' añadido ✅", icon="🧩")
 
     with col_limpiar:
-        if st.button("🗑️ Limpiar filtros", use_container_width=True):
+        if st.button("🗑️ Limpiar filtros", key="btn_clear_filtros"):
             st.session_state["historial_filtros"] = []
             st.toast("Pipeline de filtros limpiado.", icon="🗑️")
 
@@ -443,13 +443,11 @@ with st.sidebar:
     # Botones Añadir / Limpiar mejoras
     col_add_m, col_clr_m = st.columns(2)
     with col_add_m:
-        if st.button("➕ Añadir mejora", use_container_width=True,
-                     key="btn_add_mejora"):
+        if st.button("➕ Añadir mejora", key="btn_add_mejora"):
             st.session_state["historial_mejoras"].append(dict(config_mejora))
             st.toast(f"Mejora '{mejora_elegida}' añadida ✅", icon="✨")
     with col_clr_m:
-        if st.button("🗑️ Limpiar mejoras", use_container_width=True,
-                     key="btn_clr_mejoras"):
+        if st.button("🗑️ Limpiar mejoras", key="btn_clr_mejoras"):
             st.session_state["historial_mejoras"] = []
             st.toast("Pipeline de mejoras limpiado.", icon="🗑️")
 
