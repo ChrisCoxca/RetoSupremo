@@ -32,6 +32,13 @@ from procesamiento import (
     aplicar_mejora,
     calcular_histograma_comparativo,
     MEJORAS_OPCIONES,
+    # Fase 5 — Segmentación
+    aplicar_umbral,
+    aplicar_cierre,
+    aplicar_apertura,
+    aplicar_relleno_huecos,
+    METODOS_UMBRALIZACION,
+    METODOS_AUTOMATICOS,
 )
 
 
@@ -479,9 +486,125 @@ with st.sidebar:
 
     st.divider()
 
+    # =========================================================================
+    # § 5 — Segmentación (Fase 5)
+    # =========================================================================
+    st.markdown("#### 🎯 Fase 5 — Segmentación")
+    st.caption("Opera sobre `img_mejorada` (salida de Fase 4).")
+
+    # ── Selector del método de umbralización ─────────────────────────────────
+    metodo_umbral = st.selectbox(
+        "Método de umbralización",
+        options=METODOS_UMBRALIZACION,
+        index=0,
+        key="sel_metodo_umbral",
+        help=(
+            "Otsu/Kapur/Media → automático. "
+            "Banda → rango [T1,T2] ideal para botellas. "
+            "Manual → umbral fijo."
+        ),
+    )
+
+    # ── Controles dinámicos según el método elegido ───────────────────────────
+    if metodo_umbral == "Manual":
+        umbral_manual_val = st.slider(
+            "Umbral manual",
+            min_value=0,
+            max_value=255,
+            value=127,
+            step=1,
+            key="slider_umbral_manual",
+            help="Píxeles con intensidad > umbral → blanco (objeto).",
+        )
+
+    elif metodo_umbral == "Banda":
+        banda_t1 = st.slider(
+            "T1 — límite inferior",
+            min_value=0,
+            max_value=253,
+            value=80,
+            step=1,
+            key="slider_banda_t1",
+            help="Intensidad mínima del rango de la botella.",
+        )
+        banda_t2 = st.slider(
+            "T2 — límite superior",
+            min_value=banda_t1 + 1,
+            max_value=255,
+            value=max(banda_t1 + 1, 200),
+            step=1,
+            key="slider_banda_t2",
+            help="Intensidad máxima del rango de la botella.",
+        )
+        st.caption(
+            f"🟦 Rango activo: **[{banda_t1}, {banda_t2}]** "
+            f"— amplitud = {banda_t2 - banda_t1} niveles."
+        )
+
+    else:
+        # Otsu, Kapur, Media
+        st.info(
+            "Umbral calculado automáticamente al procesar la imagen.",
+            icon="🤖",
+        )
+
+    # ── Inversión de la máscara ───────────────────────────────────────────────
+    invertir_mascara = st.checkbox(
+        "Invertir máscara",
+        value=False,
+        key="chk_invertir",
+        help="Intercambia fondo y objeto en la máscara binaria.",
+    )
+
+    st.markdown("**Morfología post-umbralización**")
+
+    # ── Cierre morfológico ────────────────────────────────────────────────────
+    aplicar_cierre_chk = st.checkbox(
+        "Aplicar cierre (rellena huecos)",
+        value=True,
+        key="chk_cierre",
+        help="Dilatación + Erosión. Sella discontinuidades dentro de la botella.",
+    )
+    ksize_cierre = st.slider(
+        "Kernel cierre",
+        min_value=3,
+        max_value=15,
+        value=7,
+        step=2,
+        key="slider_kcierre",
+        help="Tamaño del elemento estructurante elíptico para el cierre.",
+    )
+
+    # ── Apertura morfológica ──────────────────────────────────────────────────
+    aplicar_apertura_chk = st.checkbox(
+        "Aplicar apertura (elimina ruido)",
+        value=False,
+        key="chk_apertura",
+        help="Erosión + Dilatación. Elimina manchas de ruido pequeñas.",
+    )
+    ksize_apertura = st.slider(
+        "Kernel apertura",
+        min_value=3,
+        max_value=11,
+        value=3,
+        step=2,
+        key="slider_kapertura",
+        help="Tamaño del elemento estructurante elíptico para la apertura.",
+    )
+
+    # ── Relleno de huecos internos ────────────────────────────────────────────
+    aplicar_relleno_chk = st.checkbox(
+        "Rellenar huecos internos",
+        value=False,
+        key="chk_relleno",
+        help="Flood-fill desde el exterior para cerrar cavidades internas.",
+    )
+
+    st.divider()
+
     # ── Resumen del pipeline ──────────────────────────────────────────────────
-    n_filtros = len(st.session_state["historial_filtros"])
-    n_mejoras = len(st.session_state["historial_mejoras"])
+    n_filtros  = len(st.session_state["historial_filtros"])
+    n_mejoras  = len(st.session_state["historial_mejoras"])
     fft_estado = "✅ activa" if st.session_state.get("chk_fft_activo", False) else "❌ inactiva"
     st.markdown(
         f"**Resumen del pipeline**\n\n"
@@ -490,7 +613,7 @@ with st.sidebar:
         f"3. 🧩 Filtros espaciales: _{n_filtros} aplicado(s)_\n"
         f"3.5 🌀 FFT: _{fft_estado}_\n"
         f"4. ✨ Mejoras: _{n_mejoras} aplicada(s)_\n"
-        f"5. 🎯 Segmentación _(óprxima versión)_"
+        f"5. 🎯 Segmentación: _{metodo_umbral}_"
     )
 
 
@@ -1008,6 +1131,215 @@ def main() -> None:
             "2. Corrección Gamma (γ=0.7) → realzar sombras\n"
             "3. Contracción/Expansión → ajustar rango dinámico",
             icon="ℹ️",
+        )
+
+
+    # =========================================================================
+    # FASE 5 · Segmentación
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("## 🎯 Fase 5 · Segmentación")
+
+    # Recuperar la imagen mejorada del session state
+    img_mejorada_f5 = st.session_state.get("img_mejorada")
+
+    if img_mejorada_f5 is None:
+        st.warning(
+            "⚠️ No hay imagen disponible para la Fase 5. "
+            "Sube una imagen y procesa las fases anteriores primero.",
+            icon="⚠️",
+        )
+    else:
+        # ── Leer parámetros de umbralización desde session_state ──────────────
+        metodo_f5  = st.session_state.get("sel_metodo_umbral", "Otsu")
+        invertir   = st.session_state.get("chk_invertir", False)
+
+        # Parámetros opcionales según el método
+        kwargs_umbral = {}
+        if metodo_f5 == "Manual":
+            kwargs_umbral["umbral"] = int(
+                st.session_state.get("slider_umbral_manual", 127)
+            )
+        elif metodo_f5 == "Banda":
+            t1_val = int(st.session_state.get("slider_banda_t1", 80))
+            t2_val = int(st.session_state.get("slider_banda_t2", 200))
+            kwargs_umbral["t1"] = t1_val
+            kwargs_umbral["t2"] = t2_val
+
+        with st.spinner("Calculando umbralización…"):
+            # 1. Umbralizar
+            mascara_f5, info_umbral = aplicar_umbral(
+                img_mejorada_f5,
+                metodo=metodo_f5,
+                invertir=invertir,
+                **kwargs_umbral,
+            )
+
+            # 2. Cierre morfológico (opcional)
+            if st.session_state.get("chk_cierre", True):
+                kc = int(st.session_state.get("slider_kcierre", 7))
+                mascara_f5 = aplicar_cierre(mascara_f5, kc)
+
+            # 3. Apertura morfológica (opcional)
+            if st.session_state.get("chk_apertura", False):
+                ka = int(st.session_state.get("slider_kapertura", 3))
+                mascara_f5 = aplicar_apertura(mascara_f5, ka)
+
+            # 4. Relleno de huecos internos (opcional)
+            if st.session_state.get("chk_relleno", False):
+                mascara_f5 = aplicar_relleno_huecos(mascara_f5)
+
+        # 5. Guardar en session_state para fases futuras
+        st.session_state["img_binarizada"] = mascara_f5
+
+        # ── Métrica del umbral (solo para métodos automáticos) ────────────────
+        if metodo_f5 in METODOS_AUTOMATICOS:
+            umbral_calc = info_umbral.get("umbral", "—")
+            col_met1, col_met2, col_met3 = st.columns(3)
+            col_met1.metric("Umbral calculado", f"{umbral_calc}")
+            if metodo_f5 == "Kapur":
+                col_met2.metric(
+                    "Entropía máx.",
+                    f"{info_umbral.get('entropia_max', '—')}"
+                )
+            elif metodo_f5 == "Media":
+                col_met2.metric(
+                    "Media global",
+                    f"{info_umbral.get('media', '—')}"
+                )
+            col_met3.metric(
+                "Píxeles objeto",
+                f"{int((mascara_f5 > 0).sum()):,}",
+            )
+
+        # ── Construir overlay: imagen mejorada + máscara verde al 50 % ────────
+        # Convertir la imagen mejorada a RGB de 3 canales para el overlay
+        if img_mejorada_f5.ndim == 2:
+            img_rgb_base = cv2.cvtColor(img_mejorada_f5, cv2.COLOR_GRAY2RGB)
+        else:
+            img_rgb_base = img_mejorada_f5.copy()
+
+        # Crear una capa verde sólida donde la máscara es positiva
+        capa_verde = np.zeros_like(img_rgb_base, dtype=np.uint8)
+        capa_verde[mascara_f5 > 0] = [0, 220, 80]   # verde brillante
+
+        # Mezclar imagen base con la capa verde al 50 %
+        img_overlay = cv2.addWeighted(img_rgb_base, 0.6, capa_verde, 0.4, 0)
+
+        # ── Histograma de la máscara binaria ──────────────────────────────────
+        hist_bin, bins_bin = np.histogram(
+            mascara_f5.flatten(), bins=2, range=(0, 256)
+        )
+        import plotly.graph_objects as go  # ya importado, pero por claridad
+        fig_hist_bin = go.Figure()
+        fig_hist_bin.add_bar(
+            x=["Fondo (0)", "Objeto (255)"],
+            y=[int(hist_bin[0]), int(hist_bin[1])],
+            marker_color=["#334155", "#38bdf8"],
+        )
+        fig_hist_bin.update_layout(
+            title=dict(text="Distribución binaria", font=dict(size=13)),
+            xaxis_title="Clase",
+            yaxis_title="Píxeles",
+            margin=dict(l=10, r=10, t=40, b=30),
+            height=300,
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
+
+        # ── Tres columnas iguales ─────────────────────────────────────────────
+        col_bin, col_ov, col_hist_bin = st.columns(3)
+
+        with col_bin:
+            st.markdown("**Máscara binaria**")
+            # st.image: width="stretch", SIN key
+            st.image(
+                mascara_f5,
+                width="stretch",
+                clamp=True,
+                channels="GRAY",
+            )
+            n_obj = int((mascara_f5 > 0).sum())
+            pct   = round(100.0 * n_obj / mascara_f5.size, 1)
+            st.caption(f"🟦 {n_obj:,} px objeto · {pct} % del total")
+
+        with col_ov:
+            st.markdown("**Overlay (verde = objeto)**")
+            # st.image: width="stretch", SIN key
+            st.image(
+                img_overlay,
+                width="stretch",
+                clamp=True,
+                channels="RGB",
+            )
+            st.caption("Máscara superpuesta en verde al 40 %")
+
+        with col_hist_bin:
+            st.markdown("**Histograma binario**")
+            st.plotly_chart(
+                fig_hist_bin,
+                width="stretch",
+                key="chart_hist_bin_fase5",
+            )
+
+        # ── Caption explicativo del método y parámetros ───────────────────────
+        if metodo_f5 == "Otsu":
+            desc_metodo = (
+                f"🤖 **Otsu** — umbral automático = **{info_umbral['umbral']}**. "
+                "Maximiza la varianza entre fondo y objeto."
+            )
+        elif metodo_f5 == "Kapur":
+            desc_metodo = (
+                f"🤖 **Kapur** — umbral = **{info_umbral['umbral']}** "
+                f"(entropía máx. = {info_umbral['entropia_max']}). "
+                "Maximiza la entropía conjunta de las dos regiones."
+            )
+        elif metodo_f5 == "Media":
+            desc_metodo = (
+                f"🤖 **Media** — umbral = media global = **{info_umbral['media']}**. "
+                "Simple y rápido, funciona bien con iluminación uniforme."
+            )
+        elif metodo_f5 == "Manual":
+            desc_metodo = (
+                f"🔧 **Manual** — umbral fijo = **{info_umbral['umbral']}**. "
+                "Control total del usuario sobre el punto de corte."
+            )
+        else:  # Banda
+            desc_metodo = (
+                f"🎯 **Banda** — rango **[{info_umbral['t1']}, {info_umbral['t2']}]**. "
+                "Aisla el rango de intensidad específico de la botella PET. "
+                "Es el método más efectivo cuando la botella tiene intensidad "
+                "diferenciada del cuerpo de agua."
+            )
+
+        morf_aplicada = []
+        if st.session_state.get("chk_cierre", True):
+            morf_aplicada.append(
+                f"Cierre k={st.session_state.get('slider_kcierre', 7)}"
+            )
+        if st.session_state.get("chk_apertura", False):
+            morf_aplicada.append(
+                f"Apertura k={st.session_state.get('slider_kapertura', 3)}"
+            )
+        if st.session_state.get("chk_relleno", False):
+            morf_aplicada.append("Relleno de huecos")
+        if invertir:
+            morf_aplicada.append("Máscara invertida")
+
+        desc_morf = (
+            " → ".join(morf_aplicada) if morf_aplicada
+            else "Sin operaciones morfológicas."
+        )
+
+        st.caption(
+            f"{desc_metodo}  \n"
+            f"🔩 Morfología: {desc_morf}"
+        )
+
+        st.success(
+            "✅ Fase 5 completada · Máscara guardada en `img_binarizada`.",
+            icon="🎯",
         )
 
 

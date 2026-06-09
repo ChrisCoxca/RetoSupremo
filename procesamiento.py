@@ -1014,3 +1014,317 @@ def calcular_histograma_comparativo(
     )
 
     return fig
+
+
+# =============================================================================
+# FASE 5 — Segmentación por umbralización y morfología
+# =============================================================================
+
+# Constantes exportadas para la UI
+METODOS_UMBRALIZACION = ["Otsu", "Kapur", "Media", "Banda", "Manual"]
+METODOS_AUTOMATICOS   = {"Otsu", "Kapur", "Media"}
+
+
+def umbralizar_otsu(imagen_gris: np.ndarray) -> tuple:
+    """
+    Umbraliza la imagen usando el método de Otsu.
+
+    Otsu maximiza la varianza inter-clase buscando el umbral óptimo
+    de manera automática a partir del histograma de la imagen.
+
+    Parámetros
+    ----------
+    imagen_gris : np.ndarray 2D uint8
+        Imagen en escala de grises.
+
+    Retorna
+    -------
+    (binaria, info) : tuple
+        binaria : np.ndarray 2D uint8 — máscara binaria 0/255.
+        info    : dict — {"umbral": int} con el valor encontrado por Otsu.
+    """
+    thresh_val, binaria = cv2.threshold(
+        imagen_gris,
+        0,           # ignorado cuando se usa THRESH_OTSU
+        255,
+        cv2.THRESH_BINARY + cv2.THRESH_OTSU,
+    )
+    info = {"umbral": int(thresh_val)}
+    return binaria, info
+
+
+def umbralizar_kapur(imagen_gris: np.ndarray) -> tuple:
+    """
+    Umbraliza la imagen usando la entropía de Kapur (máxima entropía).
+
+    El método itera sobre todos los umbrales candidatos (1–254) y elige
+    el valor t* que maximiza la entropía total de la imagen dividida en
+    dos regiones: fondo (0..t*-1) y objeto (t*..255).
+
+    H_total(t) = p1 * (−Σ p1n·log(p1n+ε)) + p2 * (−Σ p2n·log(p2n+ε))
+
+    Parámetros
+    ----------
+    imagen_gris : np.ndarray 2D uint8
+
+    Retorna
+    -------
+    (binaria, info) : tuple
+        binaria  : np.ndarray 2D uint8
+        info     : dict — {"umbral": int, "entropia_max": float}
+    """
+    # Histograma normalizado (probabilidades)
+    hist, _ = np.histogram(imagen_gris.flatten(), bins=256, range=(0, 256))
+    prob = hist.astype(np.float64) / float(imagen_gris.size)
+
+    mejor_H    = -np.inf
+    umbral_opt = 127
+
+    for t in range(1, 255):
+        # Región 1: [0, t-1]
+        p1_vec = prob[:t]
+        P1     = p1_vec.sum()
+        if P1 <= 0:
+            continue
+        p1_norm  = p1_vec / P1
+        H1 = -np.sum(p1_norm * np.log(p1_norm + 1e-12))
+
+        # Región 2: [t, 255]
+        p2_vec = prob[t:]
+        P2     = p2_vec.sum()
+        if P2 <= 0:
+            continue
+        p2_norm  = p2_vec / P2
+        H2 = -np.sum(p2_norm * np.log(p2_norm + 1e-12))
+
+        H_total = P1 * H1 + P2 * H2
+        if H_total > mejor_H:
+            mejor_H    = H_total
+            umbral_opt = t
+
+    _, binaria = cv2.threshold(
+        imagen_gris,
+        umbral_opt,
+        255,
+        cv2.THRESH_BINARY,
+    )
+    info = {"umbral": int(umbral_opt), "entropia_max": round(float(mejor_H), 4)}
+    return binaria, info
+
+
+def umbralizar_media(imagen_gris: np.ndarray) -> tuple:
+    """
+    Umbraliza usando la media global de intensidad como umbral.
+
+    Umbral = round(mean(imagen_gris)).
+
+    Parámetros
+    ----------
+    imagen_gris : np.ndarray 2D uint8
+
+    Retorna
+    -------
+    (binaria, info) : tuple
+        binaria : np.ndarray 2D uint8
+        info    : dict — {"umbral": int, "media": float}
+    """
+    media   = float(np.mean(imagen_gris))
+    umbral  = int(round(media))
+    _, binaria = cv2.threshold(imagen_gris, umbral, 255, cv2.THRESH_BINARY)
+    info = {"umbral": umbral, "media": round(media, 2)}
+    return binaria, info
+
+
+def umbralizar_manual(imagen_gris: np.ndarray, umbral: int = 127) -> tuple:
+    """
+    Umbraliza usando un umbral definido manualmente por el usuario.
+
+    Parámetros
+    ----------
+    imagen_gris : np.ndarray 2D uint8
+    umbral      : int  — valor entre 0 y 255.
+
+    Retorna
+    -------
+    (binaria, info) : tuple
+        binaria : np.ndarray 2D uint8
+        info    : dict — {"umbral": int}
+    """
+    _, binaria = cv2.threshold(imagen_gris, umbral, 255, cv2.THRESH_BINARY)
+    info = {"umbral": int(umbral)}
+    return binaria, info
+
+
+def umbralizar_banda(
+    imagen_gris: np.ndarray,
+    t1: int = 80,
+    t2: int = 200,
+) -> tuple:
+    """
+    Umbralización por banda de intensidad.
+
+    Los píxeles cuya intensidad cae en [t1, t2] se marcan como 255 (objeto);
+    el resto queda en 0 (fondo). Este método es el más útil para aislar
+    botellas PET en cuerpos de agua, porque permite ajustar precisamente
+    el rango de intensidad correspondiente al plástico transparente/blanco.
+
+    Parámetros
+    ----------
+    imagen_gris : np.ndarray 2D uint8
+    t1          : int — límite inferior del rango (inclusive).
+    t2          : int — límite superior del rango (inclusive), t2 > t1.
+
+    Retorna
+    -------
+    (binaria, info) : tuple
+        binaria : np.ndarray 2D uint8 — máscara de banda.
+        info    : dict — {"t1": int, "t2": int}
+    """
+    binaria = np.zeros_like(imagen_gris, dtype=np.uint8)
+    # Píxeles dentro del rango [t1, t2] → 255
+    mascara_banda = (imagen_gris >= t1) & (imagen_gris <= t2)
+    binaria[mascara_banda] = 255
+    info = {"t1": int(t1), "t2": int(t2)}
+    return binaria, info
+
+
+# -----------------------------------------------------------------------------
+# MORFOLOGÍA POST-UMBRALIZACIÓN — operaciones para limpiar la máscara binaria
+# -----------------------------------------------------------------------------
+
+def aplicar_cierre(mascara: np.ndarray, ksize: int = 5) -> np.ndarray:
+    """
+    Aplica cierre morfológico (MORPH_CLOSE) con kernel elíptico.
+
+    El cierre (dilatación seguida de erosión) rellena pequeños huecos
+    y discontinuidades dentro de los objetos segmentados.
+
+    Parámetros
+    ----------
+    mascara : np.ndarray 2D uint8 — máscara binaria (0/255).
+    ksize   : int — tamaño del kernel cuadrado (debe ser impar).
+
+    Retorna
+    -------
+    np.ndarray 2D uint8 — máscara con huecos rellenados.
+    """
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (int(ksize), int(ksize))
+    )
+    return cv2.morphologyEx(mascara, cv2.MORPH_CLOSE, kernel)
+
+
+def aplicar_apertura(mascara: np.ndarray, ksize: int = 3) -> np.ndarray:
+    """
+    Aplica apertura morfológica (MORPH_OPEN) con kernel elíptico.
+
+    La apertura (erosión seguida de dilatación) elimina pequeñas manchas
+    de ruido aisladas fuera del objeto principal (botellas).
+
+    Parámetros
+    ----------
+    mascara : np.ndarray 2D uint8 — máscara binaria (0/255).
+    ksize   : int — tamaño del kernel (debe ser impar).
+
+    Retorna
+    -------
+    np.ndarray 2D uint8 — máscara sin ruido pequeño.
+    """
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (int(ksize), int(ksize))
+    )
+    return cv2.morphologyEx(mascara, cv2.MORPH_OPEN, kernel)
+
+
+def aplicar_relleno_huecos(mascara: np.ndarray) -> np.ndarray:
+    """
+    Rellena completamente los huecos internos de los objetos binarios.
+
+    Algoritmo:
+    1. Hacer flood-fill desde la esquina superior izquierda (0, 0)
+       sobre una copia con borde de 2px — esto pinta el fondo exterior.
+    2. Invertir esa imagen → solo el interior de los objetos queda blanco.
+    3. OR con la máscara original → objetos sólidos sin huecos internos.
+
+    Parámetros
+    ----------
+    mascara : np.ndarray 2D uint8 — máscara binaria (0/255).
+
+    Retorna
+    -------
+    np.ndarray 2D uint8 — máscara con huecos internos rellenados.
+    """
+    h, w = mascara.shape[:2]
+    # Canvas más grande (borde de 2px para que flood-fill no se escape)
+    canvas = np.zeros((h + 4, w + 4), dtype=np.uint8)
+    canvas[2:h + 2, 2:w + 2] = mascara
+
+    # Flood-fill desde la esquina (0,0) → pinta el fondo exterior
+    mascara_flood = canvas.copy()
+    cv2.floodFill(mascara_flood, None, (0, 0), 255)
+
+    # Invertir → solo quedan blancos los huecos internos
+    exterior_invertido = cv2.bitwise_not(mascara_flood)
+
+    # Recortar el borde que añadimos
+    exterior_recortado = exterior_invertido[2:h + 2, 2:w + 2]
+
+    # OR con la máscara original: objetos + huecos rellenados
+    resultado = cv2.bitwise_or(mascara, exterior_recortado)
+    return resultado
+
+
+def aplicar_umbral(
+    imagen_gris: np.ndarray,
+    metodo: str,
+    invertir: bool = False,
+    **kwargs,
+) -> tuple:
+    """
+    Dispatcher central de umbralización.
+
+    Enruta la solicitud al método correcto según el parámetro `metodo`
+    y opcionalmente invierte la máscara resultante.
+
+    Parámetros
+    ----------
+    imagen_gris : np.ndarray 2D uint8
+    metodo      : str — uno de METODOS_UMBRALIZACION.
+    invertir    : bool — si True, devuelve (255 − binaria).
+    **kwargs    : parámetros adicionales según el método:
+                  umbral (Manual), t1/t2 (Banda).
+
+    Retorna
+    -------
+    (binaria, info) : tuple
+        binaria : np.ndarray 2D uint8
+        info    : dict con los parámetros usados.
+
+    Raises
+    ------
+    ValueError si `metodo` no está en METODOS_UMBRALIZACION.
+    """
+    if metodo == "Otsu":
+        binaria, info = umbralizar_otsu(imagen_gris)
+    elif metodo == "Kapur":
+        binaria, info = umbralizar_kapur(imagen_gris)
+    elif metodo == "Media":
+        binaria, info = umbralizar_media(imagen_gris)
+    elif metodo == "Manual":
+        umbral = int(kwargs.get("umbral", 127))
+        binaria, info = umbralizar_manual(imagen_gris, umbral)
+    elif metodo == "Banda":
+        t1 = int(kwargs.get("t1", 80))
+        t2 = int(kwargs.get("t2", 200))
+        binaria, info = umbralizar_banda(imagen_gris, t1, t2)
+    else:
+        raise ValueError(
+            f"Método desconocido: '{metodo}'. "
+            f"Opciones válidas: {METODOS_UMBRALIZACION}"
+        )
+
+    # Inversión opcional de la máscara
+    if invertir:
+        binaria = cv2.bitwise_not(binaria)
+
+    return binaria, info
