@@ -1603,4 +1603,229 @@ def dibujar_contorno(
     # -1 dibuja todos los contornos encontrados
     cv2.drawContours(copia, contornos, -1, color, grosor)
     
-    return copia
+    return copia
+
+
+# =============================================================================
+# FASE 7 — Análisis de Simetría Bilateral
+# Confirma matemáticamente si el objeto segmentado es una botella PET
+# mediante el índice de simetría IoU (Intersección sobre Unión).
+# =============================================================================
+
+def calcular_eje_simetria(mascara_binaria: np.ndarray) -> tuple:
+    """
+    Calcula el centroide y el eje principal de simetría de una máscara binaria
+    usando momentos invariantes de imagen.
+
+    Pasos:
+    1. cv2.moments(mascara) → M00, M10, M01 para el centroide.
+    2. Momentos centrales μ20, μ02, μ11 → orientación del eje principal.
+    3. theta = 0.5 · arctan2(2·μ11, μ20 − μ02) en grados.
+
+    Parámetros
+    ----------
+    mascara_binaria : np.ndarray 2D uint8
+        Máscara binaria (0/255) del componente.
+
+    Retorna
+    -------
+    (cx, cy, theta) : tuple
+        cx    : float — coordenada X del centroide.
+        cy    : float — coordenada Y del centroide.
+        theta : float — ángulo del eje principal en grados (−90° a +90°).
+    """
+    # Calcular momentos de la imagen binaria
+    momentos = cv2.moments(mascara_binaria)
+
+    # Evitar división por cero si la máscara está vacía
+    M00 = momentos["m00"]
+    if M00 == 0:
+        h, w = mascara_binaria.shape[:2]
+        return float(w / 2), float(h / 2), 0.0
+
+    # Centroide geométrico
+    cx = momentos["m10"] / M00
+    cy = momentos["m01"] / M00
+
+    # Momentos centrales normalizados (varianza e covarianza espacial)
+    mu20 = momentos["m20"] / M00 - cx ** 2   # varianza en X
+    mu02 = momentos["m02"] / M00 - cy ** 2   # varianza en Y
+    mu11 = momentos["m11"] / M00 - cx * cy   # covarianza XY
+
+    # Ángulo del eje principal (fórmula de la elipse equivalente)
+    theta = 0.5 * np.degrees(np.arctan2(2.0 * mu11, mu20 - mu02))
+
+    return float(cx), float(cy), float(theta)
+
+
+def calcular_indice_simetria(
+    mascara_binaria: np.ndarray,
+    eje: str = "vertical",
+) -> float:
+    """
+    Calcula el índice de simetría IoU (Intersección / Unión) de la máscara
+    respecto a un eje de reflexión.
+
+    Procedimiento:
+    1. Voltear la máscara respecto al eje indicado.
+    2. Calcular la intersección binaria (AND) y la unión binaria (OR).
+    3. Índice = |Intersección| / |Unión|   (Jaccard / IoU de simetría).
+
+    Interpretación orientativa para botellas PET:
+      > 0.85 → simetría alta (muy probable botella cilíndrica)
+      0.70–0.85 → simetría media (botella deformada o parcialmente oculta)
+      < 0.70  → simetría baja (probablemente no es botella)
+
+    Parámetros
+    ----------
+    mascara_binaria : np.ndarray 2D uint8
+        Máscara binaria (0/255).
+    eje : str
+        "vertical"   → reflexión respecto al eje vertical (flip horizontal, code=1).
+        "horizontal" → reflexión respecto al eje horizontal (flip vertical, code=0).
+
+    Retorna
+    -------
+    float en [0, 1] — índice de simetría IoU.
+    """
+    # Seleccionar el código de flip según el eje
+    # cv2.flip(src, flipCode):
+    #   flipCode=1  → espejo horizontal (refleja sobre el eje vertical central)
+    #   flipCode=0  → espejo vertical   (refleja sobre el eje horizontal central)
+    flip_code = 1 if eje == "vertical" else 0
+    mascara_volteada = cv2.flip(mascara_binaria, flip_code)
+
+    # Intersección (píxeles que coinciden en ambas mitades)
+    interseccion = cv2.bitwise_and(mascara_binaria, mascara_volteada)
+    # Unión (píxeles presentes en cualquiera de las dos)
+    union = cv2.bitwise_or(mascara_binaria, mascara_volteada)
+
+    n_inter = float(np.sum(interseccion > 0))
+    n_union = float(np.sum(union > 0))
+
+    # Evitar división por cero si la máscara está vacía
+    if n_union == 0:
+        return 0.0
+
+    return n_inter / n_union
+
+
+def calcular_ambos_ejes_simetria(mascara_binaria: np.ndarray) -> tuple:
+    """
+    Calcula el índice de simetría IoU para el eje vertical y el horizontal.
+
+    Las botellas PET tienen simetría vertical alta (la mitad izquierda
+    espeja la derecha) y simetría horizontal baja (la tapa es diferente
+    a la base).
+
+    Parámetros
+    ----------
+    mascara_binaria : np.ndarray 2D uint8
+
+    Retorna
+    -------
+    (simetria_v, simetria_h) : tuple de float
+        simetria_v : índice respecto al eje vertical.
+        simetria_h : índice respecto al eje horizontal.
+    """
+    simetria_v = calcular_indice_simetria(mascara_binaria, eje="vertical")
+    simetria_h = calcular_indice_simetria(mascara_binaria, eje="horizontal")
+    return simetria_v, simetria_h
+
+
+def visualizar_simetria(
+    mascara_binaria: np.ndarray,
+    cx: float,
+    cy: float,
+    theta: float,
+) -> np.ndarray:
+    """
+    Genera una imagen de diagnóstico RGB que muestra la máscara binaria
+    con el centroide y el eje de simetría superpuestos.
+
+    Elementos dibujados:
+    · Máscara en blanco sobre fondo negro.
+    · Centroide: círculo verde (radio = 6 px, grosor = −1 para relleno).
+    · Eje de simetría: línea roja que cruza toda la imagen pasando por
+      (cx, cy) con la orientación estimada por el ángulo theta.
+
+    Parámetros
+    ----------
+    mascara_binaria : np.ndarray 2D uint8
+        Máscara binaria (0/255).
+    cx, cy : float
+        Coordenadas del centroide.
+    theta : float
+        Ángulo del eje principal en grados.
+
+    Retorna
+    -------
+    np.ndarray 3D uint8 (H × W × 3) en formato RGB.
+    """
+    h, w = mascara_binaria.shape[:2]
+
+    # Crear fondo negro y pintar la máscara en gris claro
+    canvas = np.zeros((h, w, 3), dtype=np.uint8)
+    canvas[mascara_binaria > 0] = [200, 200, 200]  # gris claro para la silueta
+
+    # ── Eje de simetría (línea roja) ──────────────────────────────────────────
+    # Convertir ángulo a radianes y calcular el vector director
+    rad = np.radians(theta)
+    # Longitud suficiente para cruzar toda la imagen
+    longitud = int(max(h, w) * 1.5)
+    cos_t = np.cos(rad)
+    sin_t = np.sin(rad)
+
+    # Dos puntos extremos de la línea centrada en (cx, cy)
+    x1 = int(cx - longitud * cos_t)
+    y1 = int(cy - longitud * sin_t)
+    x2 = int(cx + longitud * cos_t)
+    y2 = int(cy + longitud * sin_t)
+
+    cv2.line(canvas, (x1, y1), (x2, y2), (220, 30, 30), 2)  # rojo
+
+    # ── Centroide (círculo verde relleno) ─────────────────────────────────────
+    cv2.circle(canvas, (int(cx), int(cy)), 6, (0, 220, 80), -1)  # verde
+    # Anillo exterior blanco para mejorar visibilidad
+    cv2.circle(canvas, (int(cx), int(cy)), 8, (255, 255, 255), 1)
+
+    return canvas
+
+
+def clasificar_por_simetria(
+    simetria_v: float,
+    simetria_h: float,
+    area_px: int,
+    elongacion: float,
+) -> tuple:
+    """
+    Clasifica el objeto segmentado combinando el índice de simetría
+    con el área y la elongación calculadas en la Fase 6.
+
+    Reglas (en orden de prioridad):
+    1. simetria_v > 0.80 AND area_px > 1000 AND elongacion > 1.3
+       → "✅ Probable Botella PET" (success)
+    2. simetria_v > 0.65
+       → "⚠️ Posible Botella (verificar)" (warning)
+    3. En cualquier otro caso
+       → "❌ No parece una botella" (error)
+
+    Parámetros
+    ----------
+    simetria_v  : float — índice de simetría vertical (IoU).
+    simetria_h  : float — índice de simetría horizontal (IoU).
+    area_px     : int   — área del componente en píxeles.
+    elongacion  : float — razón max(ancho,alto)/min(ancho,alto).
+
+    Retorna
+    -------
+    (etiqueta, tipo) : (str, str)
+        etiqueta : texto descriptivo con emoji.
+        tipo     : "success" | "warning" | "error" (para st.success/warning/error).
+    """
+    if simetria_v > 0.80 and area_px > 1000 and elongacion > 1.3:
+        return "✅ Probable Botella PET", "success"
+    elif simetria_v > 0.65:
+        return "⚠️ Posible Botella (verificar)", "warning"
+    else:
+        return "❌ No parece una botella", "error"

@@ -53,6 +53,12 @@ from procesamiento import (
     extraer_componente_por_indice,
     extraer_componente_mayor,
     dibujar_contorno,
+    # Fase 7 — Análisis de simetría bilateral
+    calcular_eje_simetria,
+    calcular_indice_simetria,
+    calcular_ambos_ejes_simetria,
+    visualizar_simetria,
+    clasificar_por_simetria,
 )
 
 
@@ -665,6 +671,30 @@ with st.sidebar:
         help="Grosor de la línea del contorno del objeto en píxeles.",
     )
 
+    # =========================================================================
+    # § 7 — Simetría (Fase 7)
+    # =========================================================================
+    st.markdown("#### 🪞 Fase 7 — Análisis de Simetría")
+    st.caption("Confirma matemáticamente si el objeto es una botella")
+
+    st.radio(
+        "Eje de análisis principal",
+        options=["vertical", "horizontal", "ambos"],
+        index=0,
+        key="radio_eje_simetria",
+        help="Eje de reflexión para calcular el índice de simetría IoU.",
+    )
+
+    st.slider(
+        "Umbral de simetría",
+        min_value=0.50,
+        max_value=1.00,
+        value=0.80,
+        step=0.05,
+        key="slider_umbral_simetria",
+        help="Índice IoU mínimo para clasificar el objeto como botella.",
+    )
+
     st.divider()
 
     st.markdown(
@@ -675,7 +705,8 @@ with st.sidebar:
         f"3.5 🌀 FFT: _{fft_estado}_\n"
         f"4. ✨ Mejoras: _{n_mejoras} aplicada(s)_\n"
         f"5. 🎯 Segmentación: _{metodo_umbral}_\n"
-        f"6. 🔬 Extracción: _{seleccion_ccl}_"
+        f"6. 🔬 Extracción: _{seleccion_ccl}_\n"
+        f"7. 🪞 Simetría: _activa_"
     )
 
 
@@ -1631,6 +1662,165 @@ def main() -> None:
         st.success(
             "✅ Fase 6 completada · Extracción y análisis de componentes conexos exitosos.",
             icon="🔬",
+        )
+
+    # =========================================================================
+    # FASE 7 · Análisis de Simetría Bilateral
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("## 🪞 Fase 7 · Análisis de Simetría Bilateral")
+    st.caption(
+        "La simetría bilateral es una propiedad geométrica de los envases "
+        "cilíndricos que confirma si el objeto segmentado es una botella."
+    )
+
+    # Verificar que la máscara final exista (generada en la Fase 6)
+    mascara_f7 = st.session_state.get("img_mascara_final")
+
+    if mascara_f7 is None:
+        st.warning(
+            "⚠️ No hay máscara disponible para la Fase 7. "
+            "Completa las Fases 5 y 6 para extraer el componente principal.",
+            icon="⚠️",
+        )
+    else:
+        # ── 1. Calcular eje de simetría (centroide + ángulo del eje principal) ──
+        cx, cy, theta = calcular_eje_simetria(mascara_f7)
+
+        # ── 2. Calcular índices de simetría IoU para ambos ejes ───────────────
+        simetria_v, simetria_h = calcular_ambos_ejes_simetria(mascara_f7)
+
+        # ── 3. Recuperar descriptores del componente extraído (Fase 6) ─────────
+        # Se usa lo almacenado en session_state por la Fase 6
+        stats_f7 = st.session_state.get("ccl_stats")
+        etiquetas_f7 = st.session_state.get("ccl_etiquetas")
+        area_f7 = 0
+        elongacion_f7 = 0.0
+
+        if stats_f7 is not None and etiquetas_f7 is not None:
+            # Obtener la etiqueta del componente principal almacenado
+            n_labels_f7 = stats_f7.shape[0]
+            if n_labels_f7 > 1:
+                # El componente mayor es el que fue extraído en modo automático
+                idx_f7 = int(np.argmax(stats_f7[1:, cv2.CC_STAT_AREA]) + 1)
+                desc_f7 = calcular_descriptores(stats_f7, idx_f7)
+                area_f7 = desc_f7["area"]
+                elongacion_f7 = desc_f7["elongacion"]
+
+        # Si se usó extracción manual, sobreescribir con el área de la máscara
+        if area_f7 == 0:
+            area_f7 = int(np.sum(mascara_f7 > 0))
+
+        # ── 4. Clasificar según simetría + área + elongación ──────────────────
+        etiqueta_f7, tipo_f7 = clasificar_por_simetria(
+            simetria_v, simetria_h, area_f7, elongacion_f7
+        )
+
+        # ── Mostrar resultado de clasificación ────────────────────────────────
+        umbral_simetria = st.session_state.get("slider_umbral_simetria", 0.80)
+        if tipo_f7 == "success":
+            st.success(etiqueta_f7, icon="🍶")
+        elif tipo_f7 == "warning":
+            st.warning(etiqueta_f7, icon="⚠️")
+        else:
+            st.error(etiqueta_f7, icon="❌")
+
+        # ── Dos columnas: visualización del eje + métricas ─────────────────────
+        col_sim_img, col_sim_metr = st.columns([1, 1])
+
+        with col_sim_img:
+            st.markdown("**Eje de simetría estimado**")
+            # Generar imagen de diagnóstico con máscara + eje + centroide
+            img_viz_sim = visualizar_simetria(mascara_f7, cx, cy, theta)
+            # st.image: width="stretch", SIN key
+            st.image(
+                img_viz_sim,
+                width="stretch",
+                clamp=True,
+                channels="RGB",
+            )
+            st.caption(
+                "Línea roja = eje de simetría estimado · "
+                "Punto verde = centroide"
+            )
+
+        with col_sim_metr:
+            st.markdown("**Métricas de simetría**")
+            # Determinar si la simetría vertical supera el umbral configurado
+            delta_v = "Alta ✅" if simetria_v > umbral_simetria else "Baja ❌"
+            delta_h = "Alta ✅" if simetria_h > umbral_simetria else "Baja ❌"
+            st.metric("Simetría Vertical",  f"{simetria_v:.3f}", delta=delta_v)
+            st.metric("Simetría Horizontal", f"{simetria_h:.3f}", delta=delta_h)
+            st.metric("Eje estimado", f"{theta:.1f}°")
+            st.metric("Centroide", f"({cx:.0f}, {cy:.0f}) px")
+
+        # ── Gráfico de barras comparativo (Plotly) ────────────────────────────
+        import plotly.graph_objects as go
+
+        # Color de cada barra según si supera el umbral configurado
+        color_v = "#10b981" if simetria_v >= umbral_simetria else "#ef4444"
+        color_h = "#10b981" if simetria_h >= umbral_simetria else "#ef4444"
+
+        fig_sim = go.Figure()
+
+        # Barras de los índices de simetría
+        fig_sim.add_bar(
+            x=["Eje Vertical", "Eje Horizontal"],
+            y=[round(simetria_v, 4), round(simetria_h, 4)],
+            marker_color=[color_v, color_h],
+            name="Índice IoU",
+            text=[f"{simetria_v:.3f}", f"{simetria_h:.3f}"],
+            textposition="outside",
+        )
+
+        # Línea horizontal que marca el umbral de simetría
+        fig_sim.add_hline(
+            y=umbral_simetria,
+            line_dash="dash",
+            line_color="#fbbf24",
+            annotation_text=f"Umbral = {umbral_simetria:.2f}",
+            annotation_position="top left",
+        )
+
+        fig_sim.update_layout(
+            title=dict(text="Comparativa de simetría bilateral", font=dict(size=13)),
+            xaxis_title="Eje de reflexión",
+            yaxis=dict(title="Índice IoU", range=[0, 1.05]),
+            margin=dict(l=10, r=10, t=50, b=30),
+            height=320,
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            showlegend=False,
+        )
+
+        # st.plotly_chart: width="stretch" y key único obligatorio
+        st.plotly_chart(
+            fig_sim,
+            width="stretch",
+            key="chart_simetria_barras",
+        )
+
+        # ── Resumen final del análisis ─────────────────────────────────────────
+        st.markdown("### 📋 Resumen final del análisis")
+
+        # Mostrar la tabla de resumen en cuatro columnas
+        col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+        col_r1.metric("Área",        f"{area_f7:,} px²")
+        col_r2.metric("Elongación",  f"{elongacion_f7:.2f}")
+        col_r3.metric("Simetría V",  f"{simetria_v:.3f}")
+        col_r4.metric("Simetría H",  f"{simetria_h:.3f}")
+
+        col_r5, col_r6, col_r7, col_r8 = st.columns(4)
+        col_r5.metric("Eje estimado",       f"{theta:.1f}°")
+        col_r6.metric("Centroide X",        f"{cx:.0f} px")
+        col_r7.metric("Centroide Y",        f"{cy:.0f} px")
+        col_r8.metric("Clasificación",      etiqueta_f7)
+
+        # ── Mensaje de finalización del pipeline completo ─────────────────────
+        st.success(
+            "✅ Análisis completo. Pipeline de 7 fases ejecutado.",
+            icon="🏁",
         )
 
 
