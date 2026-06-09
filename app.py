@@ -45,6 +45,14 @@ from procesamiento import (
     aplicar_relleno_huecos,
     METODOS_UMBRALIZACION,
     METODOS_AUTOMATICOS,
+    # Fase 6 — Extracción y CCL
+    aplicar_ccl,
+    generar_mapa_color_ccl,
+    calcular_descriptores,
+    es_probable_botella,
+    extraer_componente_por_indice,
+    extraer_componente_mayor,
+    dibujar_contorno,
 )
 
 
@@ -612,6 +620,53 @@ with st.sidebar:
     n_filtros  = len(st.session_state["historial_filtros"])
     n_mejoras  = len(st.session_state["historial_mejoras"])
     fft_estado = "✅ activa" if st.session_state.get("chk_fft_activo", False) else "❌ inactiva"
+    
+    # =========================================================================
+    # § 6 — Extracción (Fase 6)
+    # =========================================================================
+    st.markdown("#### 🔬 Fase 6 — Extracción")
+    
+    ccl_conectividad = st.radio(
+        "Conectividad",
+        options=[4, 8],
+        index=1,  # Default es 8
+        key="radio_ccl_con",
+        horizontal=True,
+        help="Conectividad de vecindad para análisis de componentes conexos.",
+    )
+    
+    seleccion_ccl = st.radio(
+        "Selección de componente",
+        options=["Automático (mayor área)", "Manual (por índice)"],
+        index=0,
+        key="radio_sel_ccl",
+        help="Automático selecciona el componente de mayor área. Manual permite buscar por índice.",
+    )
+    
+    if seleccion_ccl == "Manual (por índice)":
+        st.number_input(
+            "Índice del componente",
+            min_value=1,
+            max_value=999,
+            value=1,
+            step=1,
+            key="num_idx_ccl",
+            help="Índice de la etiqueta del componente conexo a extraer.",
+        )
+        st.caption("Consulta la tabla CCL para ver los índices")
+        
+    grosor_contorno = st.slider(
+        "Grosor del contorno",
+        min_value=1,
+        max_value=5,
+        value=2,
+        step=1,
+        key="slider_grosor_contorno",
+        help="Grosor de la línea del contorno del objeto en píxeles.",
+    )
+
+    st.divider()
+
     st.markdown(
         f"**Resumen del pipeline**\n\n"
         f"1. 📥 Carga + redimensión\n"
@@ -619,7 +674,8 @@ with st.sidebar:
         f"3. 🧩 Filtros espaciales: _{n_filtros} aplicado(s)_\n"
         f"3.5 🌀 FFT: _{fft_estado}_\n"
         f"4. ✨ Mejoras: _{n_mejoras} aplicada(s)_\n"
-        f"5. 🎯 Segmentación: _{metodo_umbral}_"
+        f"5. 🎯 Segmentación: _{metodo_umbral}_\n"
+        f"6. 🔬 Extracción: _{seleccion_ccl}_"
     )
 
 
@@ -1346,6 +1402,235 @@ def main() -> None:
         st.success(
             "✅ Fase 5 completada · Máscara guardada en `img_binarizada`.",
             icon="🎯",
+        )
+
+    # =========================================================================
+    # FASE 6 · Análisis de Componentes Conexos (CCL) y Extracción
+    # =========================================================================
+    st.markdown("---")
+    img_binarizada = st.session_state.get("img_binarizada")
+    
+    if img_binarizada is None:
+        st.info(
+            "🔬 **Fase 6 en espera.** Completa la Fase 5 para obtener la máscara "
+            "binaria necesaria para el análisis CCL.",
+            icon="ℹ️",
+        )
+    else:
+        st.markdown("## 🔬 Fase 6 · Análisis de Componentes y Extracción")
+        
+        # 1. Convertir img_binarizada a binaria estricta (>0)*255
+        img_bin_estricta = ((img_binarizada > 0) * 255).astype(np.uint8)
+        
+        # 2. Aplicar CCL con la conectividad seleccionada
+        conectividad = st.session_state.get("radio_ccl_con", 8)
+        n_etiquetas, etiquetas, stats, centroides = aplicar_ccl(
+            img_bin_estricta,
+            conectividad=conectividad,
+        )
+        
+        # 3. Guardar resultados en session_state
+        st.session_state["ccl_n_etiquetas"] = n_etiquetas
+        st.session_state["ccl_etiquetas"]   = etiquetas
+        st.session_state["ccl_stats"]       = stats
+        st.session_state["ccl_centroides"]  = centroides
+        
+        # 4. Generar mapa de color CCL
+        mapa_color_ccl = generar_mapa_color_ccl(etiquetas, n_etiquetas)
+        
+        # 5. Detección de bordes simple con Canny
+        bordes_canny = cv2.Canny(img_bin_estricta, 50, 150)
+        
+        # ── Histograma de la máscara binaria final ────────────────────────────
+        hist_ccl, bins_ccl = np.histogram(
+            img_bin_estricta.flatten(), bins=2, range=(0, 256)
+        )
+        import plotly.graph_objects as go
+        fig_hist_ccl = go.Figure()
+        fig_hist_ccl.add_bar(
+            x=["Fondo (0)", "Objeto (255)"],
+            y=[int(hist_ccl[0]), int(hist_ccl[1])],
+            marker_color=["#1e293b", "#10b981"],
+        )
+        fig_hist_ccl.update_layout(
+            title=dict(text="Distribución binaria final", font=dict(size=13)),
+            xaxis_title="Clase",
+            yaxis_title="Píxeles",
+            margin=dict(l=10, r=10, t=40, b=30),
+            height=280,
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
+        
+        # Mostrar tres columnas
+        col_ccl1, col_ccl2, col_ccl3 = st.columns(3)
+        
+        with col_ccl1:
+            st.markdown("**Mapa de color CCL**")
+            st.image(
+                mapa_color_ccl,
+                width="stretch",
+                clamp=True,
+                channels="RGB",
+            )
+            n_obj = max(0, n_etiquetas - 1)
+            st.caption(
+                f"🎨 {n_obj} componentes conexos detectados "
+                f"(conectividad={conectividad})"
+            )
+            
+        with col_ccl2:
+            st.markdown("**Bordes (Canny)**")
+            st.image(
+                bordes_canny,
+                width="stretch",
+                clamp=True,
+                channels="GRAY",
+            )
+            st.caption("Silueta externa extraída con Canny")
+            
+        with col_ccl3:
+            st.markdown("**Distribución de Clases**")
+            st.plotly_chart(
+                fig_hist_ccl,
+                width="stretch",
+                key="chart_ccl_hist",
+            )
+
+        # ── Tabla de estadísticas en expander ─────────────────────────────────
+        with st.expander("📋 Estadísticas de componentes", expanded=False):
+            if n_obj == 0:
+                st.info("No se encontraron componentes conexos de primer plano (valor 255).")
+            else:
+                import pandas as pd
+                filas_stats = []
+                for i in range(1, n_etiquetas):
+                    desc = calcular_descriptores(stats, i)
+                    es_bot, razon = es_probable_botella(desc)
+                    filas_stats.append({
+                        "Etiqueta": i,
+                        "Área (px²)": desc["area"],
+                        "Ancho (px)": desc["ancho"],
+                        "Alto (px)": desc["alto"],
+                        "Elongación": desc["elongacion"],
+                        "¿Botella?": "✅" if es_bot else "❌",
+                        "Detalle": razon
+                    })
+                
+                df_stats = pd.DataFrame(filas_stats)
+                df_stats = df_stats.sort_values(by="Área (px²)", ascending=False)
+                
+                st.dataframe(
+                    df_stats,
+                    key="df_ccl_stats_table",
+                )
+                st.caption(
+                    "Los objetos con área > 500 px² y elongación entre 1.2 y 6.0 "
+                    "se clasifican preliminarmente como botellas."
+                )
+                
+        # ── Extracción del componente seleccionado ────────────────────────────
+        seleccion = st.session_state.get("radio_sel_ccl", "Automático (mayor área)")
+        
+        if seleccion == "Automático (mayor área)":
+            mascara_final, objeto_color, idx_elegido, area_px = extraer_componente_mayor(
+                etiquetas,
+                stats,
+                st.session_state["img_original"],
+            )
+        else:
+            idx_elegido = st.session_state.get("num_idx_ccl", 1)
+            
+            # Validación de rango
+            if idx_elegido < 1 or idx_elegido >= n_etiquetas:
+                st.error(
+                    f"❌ Índice de componente inválido: {idx_elegido}. "
+                    f"Debe estar en el rango de etiquetas detectadas: [1, {n_etiquetas - 1}]."
+                )
+                return
+            
+            mascara_final, objeto_color, area_px = extraer_componente_por_indice(
+                etiquetas,
+                stats,
+                st.session_state["img_original"],
+                idx_elegido,
+            )
+            
+        # Guardar en session_state
+        st.session_state["img_mascara_final"] = mascara_final
+        st.session_state["img_objeto_color"]   = objeto_color
+        
+        # ── Resultado Final ───────────────────────────────────────────────────
+        st.markdown("### Resultado final")
+        
+        col_res1, col_res2 = st.columns(2)
+        
+        with col_res1:
+            st.markdown("**🔲 Máscara definitiva**")
+            st.image(
+                mascara_final,
+                width="stretch",
+                clamp=True,
+                channels="GRAY",
+            )
+            st.caption(f"Máscara binaria del componente #{idx_elegido} (Área: {area_px:,} px²)")
+            
+        with col_res2:
+            st.markdown("**🍶 Botella extraída**")
+            st.image(
+                objeto_color,
+                width="stretch",
+                clamp=True,
+                channels="RGB",
+            )
+            st.caption("Objeto extraído sobre fondo negro")
+            
+        # ── Contorno sobre imagen original ────────────────────────────────────
+        st.markdown("### 🎯 Contorno sobre imagen original")
+        
+        grosor_c = st.session_state.get("slider_grosor_contorno", 2)
+        img_contorno = dibujar_contorno(
+            st.session_state["img_original"],
+            mascara_final,
+            color=(0, 255, 0),
+            grosor=grosor_c,
+        )
+        
+        st.image(
+            img_contorno,
+            width="stretch",
+            clamp=True,
+            channels="RGB",
+        )
+        st.caption("Contorno externo verde superpuesto sobre la imagen original")
+        
+        # ── Métricas en cuatro columnas ───────────────────────────────────────
+        col_metr1, col_metr2, col_metr3, col_metr4 = st.columns(4)
+        
+        if idx_elegido > 0 and idx_elegido < n_etiquetas:
+            desc_elegido = calcular_descriptores(stats, idx_elegido)
+            es_bot_elegido, _ = es_probable_botella(desc_elegido)
+            
+            x_bb = int(stats[idx_elegido, cv2.CC_STAT_LEFT])
+            y_bb = int(stats[idx_elegido, cv2.CC_STAT_TOP])
+            w_bb = int(stats[idx_elegido, cv2.CC_STAT_WIDTH])
+            h_bb = int(stats[idx_elegido, cv2.CC_STAT_HEIGHT])
+            bbox_str = f"({x_bb},{y_bb}) a ({x_bb+w_bb},{y_bb+h_bb})"
+            
+            col_metr1.metric("Etiqueta CCL", f"#{idx_elegido}")
+            col_metr2.metric("Área px²", f"{area_px:,}")
+            col_metr3.metric("Bounding Box", bbox_str)
+            col_metr4.metric("¿Es probable botella?", "✅ Sí" if es_bot_elegido else "❌ No")
+        else:
+            col_metr1.metric("Etiqueta CCL", "N/A")
+            col_metr2.metric("Área px²", "0")
+            col_metr3.metric("Bounding Box", "N/A")
+            col_metr4.metric("¿Es probable botella?", "❌ No")
+            
+        st.success(
+            "✅ Fase 6 completada · Extracción y análisis de componentes conexos exitosos.",
+            icon="🔬",
         )
 
 

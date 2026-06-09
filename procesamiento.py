@@ -1327,4 +1327,280 @@ def aplicar_umbral(
     if invertir:
         binaria = cv2.bitwise_not(binaria)
 
-    return binaria, info
+    return binaria, info
+
+
+# =============================================================================
+# FASE 6 — Análisis de Componentes Conexos (CCL) y Extracción
+# =============================================================================
+
+def aplicar_ccl(imagen_binaria: np.ndarray, conectividad: int = 8) -> tuple:
+    """
+    Aplica el análisis de componentes conexos (CCL) con estadísticas.
+
+    Parámetros
+    ----------
+    imagen_binaria : np.ndarray 2D uint8
+        Imagen binaria (máscara de entrada).
+    conectividad : int
+        Tipo de conectividad a evaluar: 4 u 8.
+
+    Retorna
+    -------
+    (n_etiquetas, etiquetas, stats, centroides) : tuple
+        n_etiquetas : int - número total de etiquetas encontradas (incluye fondo).
+        etiquetas   : np.ndarray 2D de enteros (H x W) - mapa de etiquetas.
+        stats       : np.ndarray (N x 5) - estadísticas de cada etiqueta.
+        centroides  : np.ndarray (N x 2) - coordenadas (x, y) de los centroides.
+    """
+    # Asegurar que sea binaria de un solo canal y uint8
+    if imagen_binaria.ndim == 3:
+        imagen_binaria = cv2.cvtColor(imagen_binaria, cv2.COLOR_BGR2GRAY)
+    
+    # Forzar binarización estricta (píxeles > 0 se vuelven 255)
+    _, bin_u8 = cv2.threshold(imagen_binaria, 0, 255, cv2.THRESH_BINARY)
+    
+    n_etiquetas, etiquetas, stats, centroides = cv2.connectedComponentsWithStats(
+        bin_u8,
+        connectivity=conectividad,
+    )
+    
+    return n_etiquetas, etiquetas, stats, centroides
+
+
+def generar_mapa_color_ccl(
+    etiquetas: np.ndarray,
+    n_etiquetas: int,
+    semilla: int = 42,
+) -> np.ndarray:
+    """
+    Genera una imagen en color RGB a partir de la matriz de etiquetas (label map).
+    Asigna un color aleatorio brillante a cada componente y negro (0, 0, 0) al fondo.
+
+    Parámetros
+    ----------
+    etiquetas : np.ndarray 2D de enteros
+        Matriz donde cada píxel tiene la etiqueta de su componente.
+    n_etiquetas : int
+        Número total de etiquetas (incluyendo el fondo 0).
+    semilla : int
+        Semilla para el generador pseudo-aleatorio.
+
+    Retorna
+    -------
+    np.ndarray 3D uint8 (H x W x 3)
+        Imagen RGB con los componentes coloreados.
+    """
+    if n_etiquetas <= 1:
+        # Solo hay fondo (o vacío)
+        h, w = etiquetas.shape[:2]
+        return np.zeros((h, w, 3), dtype=np.uint8)
+
+    # Generar colores RGB en rango [60, 255] para evitar colores muy oscuros
+    rng = np.random.default_rng(semilla)
+    colores = rng.integers(60, 256, size=(n_etiquetas, 3), dtype=np.uint8)
+    
+    # El fondo (etiqueta 0) debe ser negro
+    colores[0] = [0, 0, 0]
+
+    # Mapear las etiquetas a los colores generados
+    return colores[etiquetas]
+
+
+def calcular_descriptores(stats: np.ndarray, idx: int) -> dict:
+    """
+    Calcula los descriptores de forma clásicos para un componente específico.
+
+    Parámetros
+    ----------
+    stats : np.ndarray
+        Matriz de estadísticas retornada por cv2.connectedComponentsWithStats.
+    idx : int
+        Índice del componente conexo.
+
+    Retorna
+    -------
+    dict
+        Diccionario con claves: 'area', 'ancho', 'alto', 'elongacion', 'circularidad'.
+    """
+    area = int(stats[idx, cv2.CC_STAT_AREA])
+    ancho = int(stats[idx, cv2.CC_STAT_WIDTH])
+    alto = int(stats[idx, cv2.CC_STAT_HEIGHT])
+    
+    # Elongación: max(ancho, alto) / min(ancho, alto)
+    menor = min(ancho, alto)
+    elongacion = float(max(ancho, alto) / menor) if menor > 0 else 0.0
+
+    return {
+        "area": area,
+        "ancho": ancho,
+        "alto": alto,
+        "elongacion": round(elongacion, 4) if elongacion > 0 else 0.0,
+        "circularidad": None,  # Requiere perímetro, no calculado en esta fase
+    }
+
+
+def es_probable_botella(descriptores: dict) -> tuple:
+    """
+    Evalúa si un componente conexo podría ser una botella PET según sus descriptores.
+    Heurísticas clásicas basadas en el área y la elongación.
+
+    Parámetros
+    ----------
+    descriptores : dict
+        Resultado de calcular_descriptores.
+
+    Retorna
+    -------
+    (es_botella, razon) : (bool, str)
+        es_botella : True si cumple las condiciones de botella PET, False de lo contrario.
+        razon : Texto explicativo sobre la clasificación.
+    """
+    area = descriptores["area"]
+    elongacion = descriptores["elongacion"]
+
+    # 1. Descartar ruido pequeño
+    if area <= 500:
+        return False, f"Ruido o componente pequeño (Área: {area} px² <= 500 px²)"
+
+    # 2. Verificar elongación
+    # Las botellas de plástico suelen tener una relación de aspecto (elongación) de entre 1.2 y 6.0
+    if not (1.2 <= elongacion <= 6.0):
+        return False, f"Forma no elongada (Elongación: {elongacion} fuera del rango [1.2, 6.0])"
+
+    return True, f"Cumple con área ({area} px²) y elongación ({elongacion} en [1.2, 6.0])"
+
+
+def extraer_componente_por_indice(
+    etiquetas: np.ndarray,
+    stats: np.ndarray,
+    imagen_rgb: np.ndarray,
+    idx: int,
+) -> tuple:
+    """
+    Aisla un componente conexo por su etiqueta y lo extrae sobre fondo negro.
+
+    Parámetros
+    ----------
+    etiquetas : np.ndarray 2D
+        Matriz de etiquetas.
+    stats : np.ndarray
+        Matriz de estadísticas.
+    imagen_rgb : np.ndarray 3D
+        Imagen a color de referencia.
+    idx : int
+        Índice del componente a extraer.
+
+    Retorna
+    -------
+    (mascara, objeto_color, area_px) : tuple
+        mascara : np.ndarray 2D uint8 (0/255)
+        objeto_color : np.ndarray 3D uint8 (RGB)
+        area_px : int - área del componente
+    """
+    # Crear máscara binaria del componente (0 o 255)
+    mascara = (etiquetas == idx).astype(np.uint8) * 255
+    
+    # Extraer el objeto a color usando la máscara de 3 canales
+    mascara_3ch = cv2.merge([mascara, mascara, mascara])
+    objeto_color = cv2.bitwise_and(imagen_rgb, mascara_3ch)
+    
+    area_px = int(stats[idx, cv2.CC_STAT_AREA])
+    
+    return mascara, objeto_color, area_px
+
+
+def extraer_componente_mayor(
+    etiquetas: np.ndarray,
+    stats: np.ndarray,
+    imagen_rgb: np.ndarray,
+) -> tuple:
+    """
+    Encuentra y extrae el componente conexo con mayor área en la imagen,
+    excluyendo el fondo (etiqueta 0).
+
+    Parámetros
+    ----------
+    etiquetas : np.ndarray 2D
+        Matriz de etiquetas.
+    stats : np.ndarray
+        Matriz de estadísticas.
+    imagen_rgb : np.ndarray 3D
+        Imagen de entrada a color.
+
+    Retorna
+    -------
+    (mascara, objeto_color, idx_principal, area_px) : tuple
+        mascara : np.ndarray 2D uint8 (0/255)
+        objeto_color : np.ndarray 3D uint8
+        idx_principal : int - índice de la etiqueta del componente mayor
+        area_px : int - área del componente mayor
+    """
+    n_etiquetas = stats.shape[0]
+    
+    # Si solo hay fondo (etiqueta 0), retornar imágenes vacías
+    if n_etiquetas <= 1:
+        h, w = etiquetas.shape[:2]
+        mascara = np.zeros((h, w), dtype=np.uint8)
+        objeto_color = np.zeros((h, w, 3), dtype=np.uint8)
+        return mascara, objeto_color, 0, 0
+
+    # Encontrar la etiqueta con mayor área excluyendo la 0 (fondo)
+    # stats[1:, cv2.CC_STAT_AREA] nos da el área de las etiquetas 1 a n-1
+    areas_objeto = stats[1:, cv2.CC_STAT_AREA]
+    if len(areas_objeto) == 0:
+        h, w = etiquetas.shape[:2]
+        mascara = np.zeros((h, w), dtype=np.uint8)
+        objeto_color = np.zeros((h, w, 3), dtype=np.uint8)
+        return mascara, objeto_color, 0, 0
+        
+    idx_principal = int(np.argmax(areas_objeto) + 1)
+    
+    mascara, objeto_color, area_px = extraer_componente_por_indice(
+        etiquetas, stats, imagen_rgb, idx_principal
+    )
+    
+    return mascara, objeto_color, idx_principal, area_px
+
+
+def dibujar_contorno(
+    imagen_rgb: np.ndarray,
+    mascara: np.ndarray,
+    color: tuple = (0, 255, 0),
+    grosor: int = 2,
+) -> np.ndarray:
+    """
+    Dibuja el contorno exterior de una máscara binaria sobre la imagen a color.
+
+    Parámetros
+    ----------
+    imagen_rgb : np.ndarray 3D
+        Imagen a color de base (RGB).
+    mascara : np.ndarray 2D uint8
+        Máscara binaria del objeto (0/255).
+    color : tuple
+        Color del contorno en formato RGB (R, G, B).
+    grosor : int
+        Grosor de la línea del contorno en píxeles.
+
+    Retorna
+    -------
+    np.ndarray 3D
+        Copia de la imagen original con el contorno dibujado.
+    """
+    copia = imagen_rgb.copy()
+    
+    # Encontrar contornos externos
+    # cv2.RETR_EXTERNAL: solo contornos exteriores extremos
+    # cv2.CHAIN_APPROX_SIMPLE: comprime segmentos horizontales, verticales y diagonales
+    contornos, _ = cv2.findContours(
+        mascara,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE,
+    )
+    
+    # Dibujar contornos
+    # -1 dibuja todos los contornos encontrados
+    cv2.drawContours(copia, contornos, -1, color, grosor)
+    
+    return copia
