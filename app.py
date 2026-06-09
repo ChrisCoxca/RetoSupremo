@@ -25,6 +25,13 @@ from procesamiento import (
     aplicar_filtro,
     descripcion_filtro,
     NOMBRES_FILTROS,
+    # Fase 3.5 — FFT
+    fft_filter,
+    crear_espectro_con_mascara,
+    # Fase 4 — Enhancement
+    aplicar_mejora,
+    calcular_histograma_comparativo,
+    MEJORAS_OPCIONES,
 )
 
 
@@ -62,6 +69,28 @@ st.markdown("""
         color: #93c5fd;
         margin-right: 6px;
     }
+    /* Badge naranja para imagen de entrada de mejora */
+    .badge-entrada {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: 999px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        background: rgba(251,146,60,0.2);
+        color: #fb923c;
+        margin-right: 6px;
+    }
+    /* Badge morado para imagen de salida de mejora */
+    .badge-salida {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: 999px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        background: rgba(167,139,250,0.2);
+        color: #a78bfa;
+        margin-right: 6px;
+    }
     /* Separadores entre pasos */
     hr.paso-sep {
         border: none;
@@ -78,6 +107,10 @@ st.markdown("""
 # Historial de filtros: lista de dicts {"tipo": str, <params>}
 if "historial_filtros" not in st.session_state:
     st.session_state["historial_filtros"] = []
+
+# Historial de mejoras: lista de dicts {"tipo": str, <params>}
+if "historial_mejoras" not in st.session_state:
+    st.session_state["historial_mejoras"] = []
 
 
 # =============================================================================
@@ -269,15 +302,197 @@ with st.sidebar:
 
     st.divider()
 
+    # =========================================================================
+    # § 3.5 — Filtro FFT (entre Fase 3 y Fase 4)
+    # =========================================================================
+    st.markdown("#### 🌀 Fase 3.5 — Filtro FFT")
+    st.caption("Filtra la imagen en el dominio de la frecuencia.")
+
+    # Checkbox de activación del filtro FFT
+    fft_activo = st.checkbox(
+        "Aplicar filtro FFT",
+        value=False,
+        key="chk_fft_activo",
+        help="Aplica un filtro ideal paso bajas o paso altas en el dominio de Fourier.",
+    )
+
+    # Controles FFT (siempre visibles para pre-configurar antes de activar)
+    tipo_fft = st.radio(
+        "Tipo de filtro",
+        options=["lowpass", "highpass"],
+        index=0,
+        key="radio_fft_tipo",
+        horizontal=True,
+    )
+    cutoff_fft = st.slider(
+        "Cutoff (fracción del radio)",
+        min_value=0.01,
+        max_value=1.00,
+        value=0.15,
+        step=0.01,
+        key="slider_fft_cutoff",
+        help="Fracción del radio mínimo de la imagen que define la frecuencia de corte.",
+    )
+    # Caption explicativo según el tipo elegido
+    if tipo_fft == "lowpass":
+        st.caption(
+            f"🟢 **Paso Bajas** — cutoff={cutoff_fft:.2f}. "
+            "Conserva las bajas frecuencias (formas gruesas, colores planos). "
+            "Suaviza y elimina ruido de alta frecuencia."
+        )
+    else:
+        st.caption(
+            f"🔴 **Paso Altas** — cutoff={cutoff_fft:.2f}. "
+            "Conserva las altas frecuencias (bordes, texturas). "
+            "Elimina la iluminación de fondo (baja frecuencia)."
+        )
+
+    st.divider()
+
+    # =========================================================================
+    # § 4 — Mejora de contraste y brillo (Fase 4, acumulativa)
+    # =========================================================================
+    st.markdown("#### ✨ Fase 4 — Mejora de Contraste")
+    st.caption("Cada mejora opera sobre la salida de la anterior.")
+
+    # Selector de mejora
+    mejora_elegida = st.selectbox(
+        "Técnica de mejora",
+        options=MEJORAS_OPCIONES,
+        index=0,
+        key="sel_mejora",
+    )
+
+    # Controles dinámicos según la mejora elegida
+    config_mejora = {"tipo": mejora_elegida}
+
+    if mejora_elegida == "Corrección Gamma":
+        gamma_val = st.slider(
+            "Gamma (γ)",
+            min_value=0.1,
+            max_value=4.0,
+            value=1.0,
+            step=0.05,
+            key="slider_gamma",
+            help="γ<1 aclara, γ=1 identidad, γ>1 oscurece.",
+        )
+        config_mejora["gamma"] = float(gamma_val)
+        st.caption(
+            f"γ={gamma_val:.2f} — "
+            + ("Aclarando sombras" if gamma_val < 1.0
+               else "Identidad" if gamma_val == 1.0
+               else "Oscureciendo luces")
+        )
+
+    elif mejora_elegida == "Desplazamiento (Brillo)":
+        delta_val = st.slider(
+            "Delta (Δ brillo)",
+            min_value=-120,
+            max_value=120,
+            value=0,
+            step=5,
+            key="slider_delta",
+            help="+Δ aclara la imagen. -Δ la oscurece.",
+        )
+        config_mejora["delta"] = int(delta_val)
+        st.caption(
+            f"Δ={delta_val:+d} — "
+            + ("Aclarando" if delta_val > 0
+               else "Sin cambio" if delta_val == 0
+               else "Oscureciendo")
+        )
+
+    elif mejora_elegida == "Contracción / Expansión":
+        # Cuatro number_inputs para los rangos de entrada y salida
+        col_a, col_b = st.columns(2)
+        with col_a:
+            a_in = st.number_input(
+                "a_in", min_value=0, max_value=254,
+                value=50, step=5, key="num_a_in",
+                help="Límite inferior del rango de entrada.",
+            )
+            a_out = st.number_input(
+                "a_out", min_value=0, max_value=255,
+                value=0, step=5, key="num_a_out",
+                help="Límite inferior del rango de salida.",
+            )
+        with col_b:
+            b_in = st.number_input(
+                "b_in", min_value=1, max_value=255,
+                value=200, step=5, key="num_b_in",
+                help="Límite superior del rango de entrada.",
+            )
+            b_out = st.number_input(
+                "b_out", min_value=0, max_value=255,
+                value=255, step=5, key="num_b_out",
+                help="Límite superior del rango de salida.",
+            )
+        # Validación: a_in debe ser menor que b_in
+        if int(a_in) >= int(b_in):
+            st.warning("⚠️ a_in debe ser menor que b_in.", icon="⚠️")
+        config_mejora["a_in"]  = int(a_in)
+        config_mejora["b_in"]  = int(b_in)
+        config_mejora["a_out"] = int(a_out)
+        config_mejora["b_out"] = int(b_out)
+        st.caption(f"[{int(a_in)},{int(b_in)}] → [{int(a_out)},{int(b_out)}]")
+
+    else:
+        # Ecualizaciones: sin parámetros adicionales
+        st.caption(f"ℹ️ {mejora_elegida} no requiere parámetros adicionales.")
+
+    # Botones Añadir / Limpiar mejoras
+    col_add_m, col_clr_m = st.columns(2)
+    with col_add_m:
+        if st.button("➕ Añadir mejora", use_container_width=True,
+                     key="btn_add_mejora"):
+            st.session_state["historial_mejoras"].append(dict(config_mejora))
+            st.toast(f"Mejora '{mejora_elegida}' añadida ✅", icon="✨")
+    with col_clr_m:
+        if st.button("🗑️ Limpiar mejoras", use_container_width=True,
+                     key="btn_clr_mejoras"):
+            st.session_state["historial_mejoras"] = []
+            st.toast("Pipeline de mejoras limpiado.", icon="🗑️")
+
+    # Historial visual de mejoras con botón ✕ individual
+    st.divider()
+    if st.session_state["historial_mejoras"]:
+        st.markdown("**Pipeline de mejoras activo**")
+        for j, cfg_m in enumerate(st.session_state["historial_mejoras"]):
+            params_m = " · ".join(
+                f"{k}={v}" for k, v in cfg_m.items() if k != "tipo"
+            )
+            col_info_m, col_del_m = st.columns([4, 1])
+            with col_info_m:
+                st.markdown(
+                    f'<div class="filtro-card">'
+                    f'<b>{j+1}. {cfg_m["tipo"]}</b>'
+                    + (f'<br><span style="color:#94a3b8">{params_m}</span>'
+                       if params_m else "")
+                    + '</div>',
+                    unsafe_allow_html=True,
+                )
+            with col_del_m:
+                if st.button("✕", key=f"btn_del_mejora_{j}",
+                             help="Eliminar esta mejora del pipeline"):
+                    st.session_state["historial_mejoras"].pop(j)
+                    st.rerun()
+    else:
+        st.caption("Sin mejoras en el pipeline todavía.")
+
+    st.divider()
+
     # ── Resumen del pipeline ──────────────────────────────────────────────────
     n_filtros = len(st.session_state["historial_filtros"])
+    n_mejoras = len(st.session_state["historial_mejoras"])
+    fft_estado = "✅ activa" if st.session_state.get("chk_fft_activo", False) else "❌ inactiva"
     st.markdown(
         f"**Resumen del pipeline**\n\n"
         f"1. 📥 Carga + redimensión\n"
         f"2. ⬛ Escala de grises\n"
-        f"3. 🧩 Filtros: _{n_filtros} aplicado(s)_\n"
-        f"4. 🎯 Segmentación _(próxima versión)_\n"
-        f"5. 🔬 Extracción _(próxima versión)_"
+        f"3. 🧩 Filtros espaciales: _{n_filtros} aplicado(s)_\n"
+        f"3.5 🌀 FFT: _{fft_estado}_\n"
+        f"4. ✨ Mejoras: _{n_mejoras} aplicada(s)_\n"
+        f"5. 🎯 Segmentación _(óprxima versión)_"
     )
 
 
@@ -425,6 +640,31 @@ def aplicar_filtro_cacheado(
 
 
 # =============================================================================
+# 6b. FUNCIÓN CACHEADA: aplicar una mejora con caché
+#     Se cachea por (imagen_gris_bytes, config_tuple).
+# =============================================================================
+@st.cache_data(show_spinner=False)
+def aplicar_mejora_cacheada(
+    imagen_gris: np.ndarray,
+    config_tuple: tuple,
+) -> np.ndarray:
+    """
+    Versión cacheada del dispatcher de mejoras.
+
+    Parámetros
+    ----------
+    imagen_gris  : np.ndarray — imagen de entrada.
+    config_tuple : tuple      — tuple(sorted(config.items())), hasheable.
+
+    Retorna
+    -------
+    np.ndarray — imagen mejorada.
+    """
+    config = dict(config_tuple)
+    return aplicar_mejora(imagen_gris, config)
+
+
+# =============================================================================
 # 7. FLUJO PRINCIPAL — función main()
 # =============================================================================
 def main() -> None:
@@ -523,6 +763,7 @@ def main() -> None:
 
     if not historial:
         # Sin filtros: avisamos al usuario y guardamos img_filtrada = img_gris
+        # NO hacemos return: las Fases 3.5 y 4 deben ejecutarse igualmente
         st.info(
             "🧩 **Sin filtros en el pipeline.** "
             "Usa la sección 'Fase 3 — Filtros espaciales' de la barra lateral "
@@ -534,58 +775,242 @@ def main() -> None:
             icon="ℹ️",
         )
         st.session_state["img_filtrada"] = imagen_gris
-        return
+        # Continuar al bloque de Fase 3.5 y Fase 4
 
-    # Mostramos el encabezado de la sección de filtros
-    st.markdown("---")
-    st.markdown("## 🧩 Fase 3 · Filtros Espaciales")
-    st.caption(
-        f"Aplicando {len(historial)} filtro(s) de forma acumulativa. "
-        "Cada paso muestra el resultado y su histograma."
-    )
-
-    # Imagen de entrada al pipeline: la imagen en grises del Paso 2
-    img_actual = imagen_gris.copy()
-
-    for paso_idx, config in enumerate(historial):
-        numero_paso = paso_idx + 3   # Pasos 1 y 2 ya se mostraron
-        tipo_f = config["tipo"]
-
-        # Convertimos config a tuple para que sea hasheable en la caché
-        config_tuple = tuple(sorted(config.items()))
-
-        # Aplicamos el filtro (con caché: si no cambió, no recalcula)
-        with st.spinner(
-            f"Aplicando filtro {paso_idx+1}/{len(historial)}: {tipo_f}…"
-        ):
-            img_actual = aplicar_filtro_cacheado(img_actual, config_tuple)
-
-        # Construimos el string de parámetros para el título
-        params_str = ", ".join(
-            f"{k}={v}" for k, v in config.items() if k != "tipo"
+    # Si hay filtros: mostramos el encabezado y ejecutamos el pipeline
+    if historial:
+        st.markdown("---")
+        st.markdown("## 🧩 Fase 3 · Filtros Espaciales")
+        st.caption(
+            f"Aplicando {len(historial)} filtro(s) de forma acumulativa. "
+            "Cada paso muestra el resultado y su histograma."
         )
 
-        mostrar_paso_ui(
-            titulo=(
-                f"Paso {numero_paso} · Filtro {paso_idx+1}: {tipo_f}"
-                + (f" ({params_str})" if params_str else "")
-            ),
-            imagen=img_actual,
-            descripcion=descripcion_filtro(tipo_f, config),
-            es_gris=True,
-            # Key único usando el índice del paso y el tipo de filtro
-            key_hist=f"paso{numero_paso}_{tipo_f.lower()}_{paso_idx}",
+        # Imagen de entrada al pipeline: la imagen en grises del Paso 2
+        img_actual = imagen_gris.copy()
+
+        for paso_idx, config in enumerate(historial):
+            numero_paso = paso_idx + 3   # Pasos 1 y 2 ya se mostraron
+            tipo_f = config["tipo"]
+
+            # Convertimos config a tuple para que sea hasheable en la caché
+            config_tuple = tuple(sorted(config.items()))
+
+            # Aplicamos el filtro (con caché: si no cambió, no recalcula)
+            with st.spinner(
+                f"Aplicando filtro {paso_idx+1}/{len(historial)}: {tipo_f}…"
+            ):
+                img_actual = aplicar_filtro_cacheado(img_actual, config_tuple)
+
+            # Construimos el string de parámetros para el título
+            params_str = ", ".join(
+                f"{k}={v}" for k, v in config.items() if k != "tipo"
+            )
+
+            mostrar_paso_ui(
+                titulo=(
+                    f"Paso {numero_paso} · Filtro {paso_idx+1}: {tipo_f}"
+                    + (f" ({params_str})" if params_str else "")
+                ),
+                imagen=img_actual,
+                descripcion=descripcion_filtro(tipo_f, config),
+                es_gris=True,
+                # Key único usando el índice del paso y el tipo de filtro
+                key_hist=f"paso{numero_paso}_{tipo_f.lower()}_{paso_idx}",
+            )
+
+        # Guardamos el resultado final del pipeline de filtros
+        st.session_state["img_filtrada"] = img_actual
+
+        st.success(
+            f"✅ Fase 3 completada · {len(historial)} filtro(s) aplicado(s). "
+            "Resultado guardado en `img_filtrada`.",
+            icon="🏁",
         )
 
-    # Guardamos el resultado final del pipeline de filtros
-    st.session_state["img_filtrada"] = img_actual
 
-    st.success(
-        f"✅ Fase 3 completada · {len(historial)} filtro(s) aplicado(s). "
-        "Resultado guardado en `img_filtrada`. "
-        "La próxima versión (V2) añadirá FFT y Enhancement.",
-        icon="🏁",
-    )
+    # ─────────────────────────────────────────────────────────────────────────
+    # FASE 3.5 · Filtrado FFT (si está activo)
+    # ─────────────────────────────────────────────────────────────────────────
+    fft_activo = st.session_state.get("chk_fft_activo", False)
+    tipo_fft   = st.session_state.get("radio_fft_tipo", "lowpass")
+    cutoff_fft = st.session_state.get("slider_fft_cutoff", 0.15)
+
+    if fft_activo:
+        st.markdown("---")
+        st.markdown("## 🌀 Fase 3.5 · Filtrado FFT")
+        st.caption(
+            f"Tipo: **{tipo_fft}** · Cutoff: **{cutoff_fft:.2f}** · "
+            "Dominio de frecuencia (Transformada de Fourier Discreta 2D)."
+        )
+
+        with st.spinner("Calculando FFT…"):
+            img_fft, mascara_fft, espectro_fft = fft_filter(
+                st.session_state["img_filtrada"],
+                cutoff=cutoff_fft,
+                tipo=tipo_fft,
+            )
+            # Espectro con el borde de la máscara superpuesto en rojo
+            espectro_con_borde = crear_espectro_con_mascara(espectro_fft, mascara_fft)
+
+        col_esp, col_fft = st.columns(2)
+
+        with col_esp:
+            st.markdown("**Espectro de magnitud (log)** con máscara")
+            # Calcular porcentaje de frecuencias conservadas
+            pct_conservadas = mascara_fft.mean() * 100.0
+            st.image(espectro_con_borde, width="stretch")
+            st.caption(
+                f"🔴 Línea roja = límite de corte (cutoff={cutoff_fft:.2f}). "
+                f"Se conservan el **{pct_conservadas:.1f} %** de las frecuencias."
+            )
+
+        with col_fft:
+            st.markdown("**Imagen resultante (dominio espacial)**")
+            st.image(img_fft, width="stretch", clamp=True, channels="GRAY")
+            # Métricas antes / después
+            img_antes_fft = st.session_state["img_filtrada"]
+            mu_antes  = float(img_antes_fft.mean())
+            mu_despues = float(img_fft.mean())
+            sig_antes  = float(img_antes_fft.std())
+            sig_despues = float(img_fft.std())
+            m1, m2 = st.columns(2)
+            m1.metric(
+                label="μ (media)",
+                value=f"{mu_despues:.1f}",
+                delta=f"{mu_despues - mu_antes:+.1f}",
+            )
+            m2.metric(
+                label="σ (desviación)",
+                value=f"{sig_despues:.1f}",
+                delta=f"{sig_despues - sig_antes:+.1f}",
+            )
+
+        # La imagen FFT reemplaza la imagen filtrada para la siguiente fase
+        st.session_state["img_filtrada"] = img_fft
+        st.markdown('<hr class="paso-sep">', unsafe_allow_html=True)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # FASE 4 · Mejora de Contraste y Brillo (acumulativa)
+    # ─────────────────────────────────────────────────────────────────────────
+    historial_mejoras = st.session_state["historial_mejoras"]
+
+    if historial_mejoras:
+        st.markdown("---")
+        st.markdown("## ✨ Fase 4 · Mejora de Contraste y Brillo")
+        st.caption(
+            f"Aplicando {len(historial_mejoras)} mejora(s) de forma acumulativa "
+            "sobre el resultado de la Fase 3/3.5."
+        )
+
+        # Imagen de entrada al pipeline de mejoras
+        img_mejora_actual = st.session_state["img_filtrada"].copy()
+
+        for m_idx, cfg_m in enumerate(historial_mejoras):
+            tipo_m = cfg_m["tipo"]
+            params_m_str = ", ".join(
+                f"{k}={v}" for k, v in cfg_m.items() if k != "tipo"
+            )
+
+            st.markdown(
+                f"### Mejora {m_idx+1}: {tipo_m}"
+                + (f" ({params_m_str})" if params_m_str else "")
+            )
+
+            # Imagen antes de la mejora (entrada)
+            img_entrada_m = img_mejora_actual.copy()
+
+            # Aplicar mejora (con caché)
+            with st.spinner(f"Aplicando {tipo_m}…"):
+                config_m_tuple = tuple(sorted(cfg_m.items()))
+                img_salida_m = aplicar_mejora_cacheada(
+                    img_entrada_m, config_m_tuple
+                )
+
+            # Columnas: entrada (izquierda) / salida (derecha)
+            col_ent, col_sal = st.columns(2)
+
+            with col_ent:
+                st.markdown('<span class="badge-entrada">Entrada</span>',
+                            unsafe_allow_html=True)
+                st.image(
+                    img_entrada_m, width="stretch",
+                    clamp=True, channels="GRAY",
+                )
+
+            with col_sal:
+                st.markdown('<span class="badge-salida">Salida</span>',
+                            unsafe_allow_html=True)
+                st.image(
+                    img_salida_m, width="stretch",
+                    clamp=True, channels="GRAY",
+                )
+
+            # Histograma comparativo debajo de las imágenes
+            fig_comp = calcular_histograma_comparativo(
+                img_entrada_m, img_salida_m
+            )
+            st.plotly_chart(
+                fig_comp,
+                width="stretch",
+                key=f"chart_comp_{m_idx}_{tipo_m.lower().replace(' ', '_')}",
+            )
+
+            # Cuatro métricas comparativas
+            delta_mu  = float(img_salida_m.mean())  - float(img_entrada_m.mean())
+            delta_sig = float(img_salida_m.std())   - float(img_entrada_m.std())
+            delta_min = int(img_salida_m.min())     - int(img_entrada_m.min())
+            delta_max = int(img_salida_m.max())     - int(img_entrada_m.max())
+
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            mc1.metric(
+                "Δμ (media)",
+                f"{float(img_salida_m.mean()):.1f}",
+                f"{delta_mu:+.1f}",
+            )
+            mc2.metric(
+                "Δσ (desviación)",
+                f"{float(img_salida_m.std()):.1f}",
+                f"{delta_sig:+.1f}",
+            )
+            mc3.metric(
+                "Δmín",
+                f"{int(img_salida_m.min())}",
+                f"{delta_min:+d}",
+            )
+            mc4.metric(
+                "Δmáx",
+                f"{int(img_salida_m.max())}",
+                f"{delta_max:+d}",
+            )
+
+            st.markdown('<hr class="paso-sep">', unsafe_allow_html=True)
+
+            # La salida de esta mejora es la entrada de la siguiente
+            img_mejora_actual = img_salida_m
+
+        # Guardar resultado final de las mejoras
+        st.session_state["img_mejorada"] = img_mejora_actual
+
+        st.success(
+            f"✅ Fase 4 completada · {len(historial_mejoras)} mejora(s) aplicada(s). "
+            "Resultado guardado en `img_mejorada`.",
+            icon="✨",
+        )
+
+    else:
+        # Si no hay mejoras, guardar la imagen filtrada como base para futuras fases
+        st.session_state["img_mejorada"] = st.session_state["img_filtrada"]
+        st.info(
+            "✨ **Sin mejoras en el pipeline.** "
+            "Usa la sección 'Fase 4 — Mejora de Contraste' de la barra lateral "
+            "para añadir mejoras.\n\n"
+            "**Estrategia recomendada:**\n"
+            "1. Ecualizar Rayleigh → aclarar imágenes subexpuestas\n"
+            "2. Corrección Gamma (γ=0.7) → realzar sombras\n"
+            "3. Contracción/Expansión → ajustar rango dinámico",
+            icon="ℹ️",
+        )
 
 
 # =============================================================================

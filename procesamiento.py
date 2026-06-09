@@ -5,9 +5,11 @@
 #
 # REGLA: Este archivo NO importa Streamlit. Solo OpenCV, NumPy y Plotly.
 #
-# Fase 1 : carga, redimensión y conversión de color.
-# Fase 2 : conversión a escala de grises.
-# Fase 3 : filtros espaciales acumulativos (7 filtros).
+# Fase 1   : carga, redimensión y conversión de color.
+# Fase 2   : conversión a escala de grises.
+# Fase 3   : filtros espaciales acumulativos (7 filtros).
+# Fase 3.5 : filtrado en frecuencia (FFT lowpass / highpass).
+# Fase 4   : mejora de contraste y brillo (6 técnicas con LUT).
 # =============================================================================
 
 import cv2
@@ -572,3 +574,443 @@ def descripcion_filtro(tipo: str, config: dict) -> str:
         ),
     }
     return descripciones.get(tipo, "Filtro aplicado.")
+
+
+# =============================================================================
+# FASE 3.5 — Filtrado en frecuencia (FFT)
+# =============================================================================
+
+def fft_filter(
+    imagen_gris: np.ndarray,
+    cutoff: float = 0.15,
+    tipo: str = "lowpass",
+) -> tuple:
+    """
+    Aplica un filtro ideal de paso bajas o paso altas en el dominio
+    de la frecuencia usando la Transformada de Fourier Discreta 2D.
+
+    Pasos internos:
+    1. np.fft.fft2  → transforma la imagen al dominio de frecuencias.
+    2. np.fft.fftshift → desplaza la componente DC al centro.
+    3. Máscara circular: radio = cutoff × min(H, W) / 2.
+       lowpass  → M=1 dentro del círculo (pasa bajas).
+       highpass → M=0 dentro del círculo (pasa altas).
+    4. Multiplicar espectro × máscara.
+    5. np.fft.ifftshift + np.fft.ifft2 → volver al dominio espacial.
+    6. Tomar parte real, recortar a [0,255] y convertir a uint8.
+
+    Espectro de magnitud:
+        S = log(1 + |F_shifted|), normalizado a [0, 255] uint8.
+
+    Parámetros
+    ----------
+    imagen_gris : np.ndarray 2D uint8
+        Imagen en escala de grises.
+    cutoff : float
+        Fracción del radio mínimo (0.01–1.00) que define el corte.
+        cutoff=0.15 → radio = 15 % del semiancho más pequeño.
+    tipo : str
+        "lowpass"  → elimina altas frecuencias (suaviza).
+        "highpass" → elimina bajas frecuencias (realza bordes).
+
+    Retorna
+    -------
+    (img_filtrada, mascara, espectro_mag) : tuple de np.ndarray
+        img_filtrada : np.ndarray 2D uint8  — resultado espacial.
+        mascara      : np.ndarray 2D float  — máscara binaria [0,1].
+        espectro_mag : np.ndarray 2D uint8  — espectro de magnitud.
+    """
+    H, W = imagen_gris.shape
+
+    # ── 1. Transformada de Fourier y desplazamiento al centro ─────────────────
+    F = np.fft.fft2(imagen_gris.astype(np.float64))
+    F_shifted = np.fft.fftshift(F)
+
+    # ── 2. Espectro de magnitud (para visualización) ──────────────────────────
+    magnitud = np.abs(F_shifted)
+    espectro_log = np.log1p(magnitud)   # log(1 + |F|)
+    # Normalizar a [0, 255]
+    espectro_min, espectro_max = espectro_log.min(), espectro_log.max()
+    if espectro_max > espectro_min:
+        espectro_norm = (espectro_log - espectro_min) / (espectro_max - espectro_min)
+    else:
+        espectro_norm = espectro_log * 0.0
+    espectro_mag = (espectro_norm * 255).astype(np.uint8)
+
+    # ── 3. Máscara circular ───────────────────────────────────────────────────
+    centro_y, centro_x = H // 2, W // 2
+    radio = cutoff * min(H, W) / 2.0
+
+    # Rejilla de coordenadas
+    ys = np.arange(H) - centro_y
+    xs = np.arange(W) - centro_x
+    XX, YY = np.meshgrid(xs, ys)
+    distancia = np.sqrt(XX**2 + YY**2)
+
+    if tipo == "lowpass":
+        mascara = (distancia <= radio).astype(np.float64)   # 1 dentro, 0 fuera
+    else:  # highpass
+        mascara = (distancia > radio).astype(np.float64)    # 0 dentro, 1 fuera
+
+    # ── 4-5. Filtrado y transformada inversa ──────────────────────────────────
+    F_filtrado = F_shifted * mascara
+    F_inv = np.fft.ifftshift(F_filtrado)
+    img_reconstruida = np.fft.ifft2(F_inv)
+
+    # ── 6. Convertir a uint8 ──────────────────────────────────────────────────
+    img_real = np.real(img_reconstruida)
+    img_filtrada = np.clip(img_real, 0, 255).astype(np.uint8)
+
+    return img_filtrada, mascara, espectro_mag
+
+
+def crear_espectro_con_mascara(
+    espectro_mag: np.ndarray,
+    mascara: np.ndarray,
+) -> np.ndarray:
+    """
+    Convierte el espectro de magnitud a RGB y dibuja el borde de la
+    máscara circular en rojo sobre él para facilitar la interpretación.
+
+    El borde se extrae con una operación morfológica MORPH_GRADIENT
+    (dilatación - erosión) con kernel 3×3, que devuelve solo los
+    píxeles de transición de la máscara.
+
+    Parámetros
+    ----------
+    espectro_mag : np.ndarray 2D uint8
+        Espectro de magnitud normalizado.
+    mascara : np.ndarray 2D float
+        Máscara binaria [0.0, 1.0] generada por fft_filter.
+
+    Retorna
+    -------
+    np.ndarray 3D uint8 (H × W × 3)
+        Espectro en RGB con borde de la máscara resaltado en rojo.
+    """
+    # Convertir espectro gris → RGB (3 canales)
+    espectro_rgb = cv2.cvtColor(espectro_mag, cv2.COLOR_GRAY2RGB)
+
+    # Borde de la máscara: MORPH_GRADIENT = dilatación - erosión
+    kernel_borde = np.ones((3, 3), dtype=np.uint8)
+    mascara_u8 = (mascara * 255).astype(np.uint8)
+    borde = cv2.morphologyEx(mascara_u8, cv2.MORPH_GRADIENT, kernel_borde)
+
+    # Pintar el borde en rojo (255, 60, 60) sobre el espectro RGB
+    espectro_rgb[borde > 0] = [255, 60, 60]
+
+    return espectro_rgb
+
+
+# =============================================================================
+# FASE 4 — Enhancement (mejora de contraste y brillo)
+# Todas las funciones:
+#   · Usan LUT de 256 entradas con cv2.LUT para máxima eficiencia.
+#   · Reciben np.ndarray 2D uint8 y devuelven np.ndarray 2D uint8.
+# =============================================================================
+
+# Lista de opciones exportada al sidebar de app.py
+MEJORAS_OPCIONES = [
+    "Corrección Gamma",
+    "Desplazamiento (Brillo)",
+    "Contracción / Expansión",
+    "Ecualización Uniforme",
+    "Ecualización Rayleigh",
+    "Ecualización Log. Hiperbólica",
+]
+
+
+def _construir_lut(valores: np.ndarray) -> np.ndarray:
+    """
+    Construye una LUT de 256 entradas a partir de un array de 256 flotantes.
+    Recorta a [0,255] y convierte a uint8.
+
+    Parámetros
+    ----------
+    valores : np.ndarray de forma (256,) con floats en [0, 255].
+
+    Retorna
+    -------
+    np.ndarray de forma (256,) uint8.
+    """
+    return np.clip(valores, 0, 255).astype(np.uint8)
+
+
+def mejora_gamma(
+    imagen_gris: np.ndarray,
+    gamma: float = 1.5,
+) -> np.ndarray:
+    """
+    Corrección gamma:
+        I_out = (I / 255)^γ × 255
+
+    γ < 1 → aclarar (realza sombras).
+    γ > 1 → oscurecer (comprime luces).
+    γ = 1 → identidad.
+
+    Parámetros
+    ----------
+    imagen_gris : np.ndarray 2D uint8
+    gamma       : float — exponente de corrección.
+
+    Retorna
+    -------
+    np.ndarray 2D uint8
+    """
+    # Construir LUT con la curva gamma
+    entradas = np.arange(256, dtype=np.float64)
+    lut = _construir_lut((entradas / 255.0) ** gamma * 255.0)
+    return cv2.LUT(imagen_gris, lut)
+
+
+def mejora_desplazamiento(
+    imagen_gris: np.ndarray,
+    delta: int = 50,
+) -> np.ndarray:
+    """
+    Desplazamiento de brillo (suma constante):
+        I_out = clip(I + Δ, 0, 255)
+
+    δ > 0 → imagen más brillante.
+    δ < 0 → imagen más oscura.
+
+    Parámetros
+    ----------
+    imagen_gris : np.ndarray 2D uint8
+    delta       : int — desplazamiento en intensidad (−255 a +255).
+
+    Retorna
+    -------
+    np.ndarray 2D uint8
+    """
+    entradas = np.arange(256, dtype=np.float64)
+    lut = _construir_lut(entradas + delta)
+    return cv2.LUT(imagen_gris, lut)
+
+
+def mejora_contraccion_expansion(
+    imagen_gris: np.ndarray,
+    a_in: int = 50,
+    b_in: int = 200,
+    a_out: int = 0,
+    b_out: int = 255,
+) -> np.ndarray:
+    """
+    Mapeo lineal por tramos (contracción / expansión de contraste):
+
+      I < a_in               → a_out
+      a_in <= I <= b_in      → lineal: a_out + (I - a_in) × (b_out - a_out) / (b_in - a_in)
+      I > b_in               → b_out
+
+    Permite expandir un rango de interés [a_in, b_in] hacia [a_out, b_out],
+    aumentando el contraste dentro de ese rango.
+
+    Parámetros
+    ----------
+    imagen_gris : np.ndarray 2D uint8
+    a_in, b_in  : int — rango de entrada (a_in < b_in).
+    a_out, b_out: int — rango de salida.
+
+    Retorna
+    -------
+    np.ndarray 2D uint8
+    """
+    entradas = np.arange(256, dtype=np.float64)
+    rango_in = float(b_in - a_in) if b_in != a_in else 1.0
+    rango_out = float(b_out - a_out)
+
+    # Mapeo lineal por tramos
+    valores = np.where(
+        entradas < a_in,
+        float(a_out),
+        np.where(
+            entradas > b_in,
+            float(b_out),
+            a_out + (entradas - a_in) * rango_out / rango_in,
+        ),
+    )
+    lut = _construir_lut(valores)
+    return cv2.LUT(imagen_gris, lut)
+
+
+def mejora_ecual_uniforme(
+    imagen_gris: np.ndarray,
+) -> np.ndarray:
+    """
+    Ecualización de histograma uniforme (estándar).
+
+    Redistribuye las intensidades para que el histograma sea lo más
+    plano posible. Maximiza el contraste global pero puede amplificar
+    ruido en regiones homogéneas.
+
+    Usa cv2.equalizeHist (implementación optimizada de OpenCV).
+
+    Parámetros
+    ----------
+    imagen_gris : np.ndarray 2D uint8
+
+    Retorna
+    -------
+    np.ndarray 2D uint8
+    """
+    return cv2.equalizeHist(imagen_gris)
+
+
+def mejora_ecual_rayleigh(
+    imagen_gris: np.ndarray,
+) -> np.ndarray:
+    """
+    Ecualización con distribución Rayleigh (curva raíz cuadrada):
+        I_out = 255 × √(I / 255)
+
+    Variante no lineal que aclarar la imagen de forma suave.
+    Más conservadora que la ecualización uniforme: no corta las
+    distribuciones bimodales abruptamente.
+
+    Parámetros
+    ----------
+    imagen_gris : np.ndarray 2D uint8
+
+    Retorna
+    -------
+    np.ndarray 2D uint8
+    """
+    entradas = np.arange(256, dtype=np.float64)
+    lut = _construir_lut(255.0 * np.sqrt(entradas / 255.0))
+    return cv2.LUT(imagen_gris, lut)
+
+
+def mejora_ecual_log_hiperbolica(
+    imagen_gris: np.ndarray,
+) -> np.ndarray:
+    """
+    Ecualización logarítmica hiperbólica:
+        I_out = 255 × log(1 + I) / log(256)
+
+    La curva logarítmica comprime los valores altos y expande los
+    bajos, realzando los detalles en zonas oscuras de la imagen.
+    Útil para imágenes subexpuestas con reflejos de agua.
+
+    Parámetros
+    ----------
+    imagen_gris : np.ndarray 2D uint8
+
+    Retorna
+    -------
+    np.ndarray 2D uint8
+    """
+    entradas = np.arange(256, dtype=np.float64)
+    lut = _construir_lut(255.0 * np.log1p(entradas) / np.log(256.0))
+    return cv2.LUT(imagen_gris, lut)
+
+
+# ── Dispatcher central de mejoras ─────────────────────────────────────────────
+
+# Mapeo nombre → función para el dispatcher
+_MEJORAS_DISPONIBLES = {
+    "Corrección Gamma":           mejora_gamma,
+    "Desplazamiento (Brillo)":    mejora_desplazamiento,
+    "Contracción / Expansión":    mejora_contraccion_expansion,
+    "Ecualización Uniforme":      mejora_ecual_uniforme,
+    "Ecualización Rayleigh":      mejora_ecual_rayleigh,
+    "Ecualización Log. Hiperbólica": mejora_ecual_log_hiperbolica,
+}
+
+
+def aplicar_mejora(imagen_gris: np.ndarray, config: dict) -> np.ndarray:
+    """
+    Dispatcher central de la Fase 4.
+
+    Recibe un diccionario con al menos la clave "tipo" y delega
+    a la función de mejora correspondiente.
+
+    Parámetros
+    ----------
+    imagen_gris : np.ndarray 2D uint8
+    config      : dict — {"tipo": str, <params>: val, ...}
+
+    Retorna
+    -------
+    np.ndarray 2D uint8
+
+    Raises
+    ------
+    ValueError si el tipo no existe en _MEJORAS_DISPONIBLES.
+    """
+    tipo = config.get("tipo", "")
+    if tipo not in _MEJORAS_DISPONIBLES:
+        raise ValueError(
+            f"Mejora desconocida: '{tipo}'. "
+            f"Opciones válidas: {list(_MEJORAS_DISPONIBLES.keys())}"
+        )
+
+    # Extraemos todos los parámetros excepto "tipo"
+    kwargs = {k: v for k, v in config.items() if k != "tipo"}
+    return _MEJORAS_DISPONIBLES[tipo](imagen_gris, **kwargs)
+
+
+def calcular_histograma_comparativo(
+    img_antes: np.ndarray,
+    img_despues: np.ndarray,
+) -> go.Figure:
+    """
+    Superpone dos histogramas en escala de grises:
+    - Rojo  = imagen de entrada (antes de la mejora).
+    - Azul  = imagen de salida  (después de la mejora).
+
+    Permite comparar visualmente cómo la mejora redistribuye
+    las intensidades.
+
+    Parámetros
+    ----------
+    img_antes   : np.ndarray 2D uint8 — imagen sin mejora.
+    img_despues : np.ndarray 2D uint8 — imagen mejorada.
+
+    Retorna
+    -------
+    plotly.graph_objects.Figure
+    """
+    fig = go.Figure()
+
+    # ── Canal "antes" en rojo ─────────────────────────────────────────────────
+    hist_antes, bins = np.histogram(
+        img_antes.flatten(), bins=256, range=(0, 256)
+    )
+    fig.add_trace(go.Scatter(
+        x=bins[:-1],
+        y=hist_antes,
+        mode="lines",
+        fill="tozeroy",
+        line=dict(color="#f87171", width=1.5),
+        fillcolor="rgba(248,113,113,0.2)",
+        name="Antes",
+    ))
+
+    # ── Canal "después" en azul ───────────────────────────────────────────────
+    hist_despues, _ = np.histogram(
+        img_despues.flatten(), bins=256, range=(0, 256)
+    )
+    fig.add_trace(go.Scatter(
+        x=bins[:-1],
+        y=hist_despues,
+        mode="lines",
+        fill="tozeroy",
+        line=dict(color="#60a5fa", width=1.5),
+        fillcolor="rgba(96,165,250,0.2)",
+        name="Después",
+    ))
+
+    # ── Estilo del gráfico ────────────────────────────────────────────────────
+    fig.update_layout(
+        title=dict(text="Histograma comparativo", font=dict(size=13)),
+        xaxis=dict(title="Intensidad (0–255)", range=[0, 255]),
+        yaxis=dict(title="Frecuencia"),
+        margin=dict(l=10, r=10, t=40, b=30),
+        legend=dict(orientation="h", y=-0.3),
+        height=300,
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+
+    return fig
