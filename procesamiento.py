@@ -2215,7 +2215,7 @@ def sugerir_pipeline(tipo_escena, metricas):
             ],
             "fft": {"activo": True, "tipo": "lowpass", "cutoff": 0.20},
             "mejoras": [
-                {"tipo": MEJORAS_OPCIONES[0], "gamma": 2.0},
+                {"tipo": "Corrección Gamma", "gamma": 2.0},
             ],
             "umbral": {"metodo": "Otsu", "invertir": False, "params": {}},
             "razon": (
@@ -2239,8 +2239,8 @@ def sugerir_pipeline(tipo_escena, metricas):
             ],
             "fft": {"activo": False, "tipo": "lowpass", "cutoff": 0.15},
             "mejoras": [
-                {"tipo": MEJORAS_OPCIONES[3]},
-                {"tipo": MEJORAS_OPCIONES[0], "gamma": 0.65},
+                {"tipo": "Ecualización Uniforme"},
+                {"tipo": "Corrección Gamma", "gamma": 0.65},
             ],
             "umbral": {"metodo": "Kapur", "invertir": True, "params": {}},
             "razon": (
@@ -2266,13 +2266,13 @@ def sugerir_pipeline(tipo_escena, metricas):
             "fft": {"activo": True, "tipo": "highpass", "cutoff": 0.06},
             "mejoras": [
                 {
-                    "tipo": MEJORAS_OPCIONES[2],
+                    "tipo": "Contracción / Expansión",
                     "a_in":  max(0,   int(metricas["pico_dominante"]) - 35),
                     "b_in":  min(255, int(metricas["pico_dominante"]) + 35),
                     "a_out": 0,
                     "b_out": 255,
                 },
-                {"tipo": MEJORAS_OPCIONES[5]},
+                {"tipo": "Ecualización Log. Hiperbólica"},
             ],
             "umbral": {
                 "metodo":   "Media",
@@ -2299,7 +2299,7 @@ def sugerir_pipeline(tipo_escena, metricas):
             ],
             "fft": {"activo": True, "tipo": "lowpass", "cutoff": 0.25},
             "mejoras": [
-                {"tipo": MEJORAS_OPCIONES[0], "gamma": 1.8},
+                {"tipo": "Corrección Gamma", "gamma": 1.8},
             ],
             "umbral": {"metodo": "Otsu", "invertir": False, "params": {}},
             "razon": (
@@ -2323,8 +2323,8 @@ def sugerir_pipeline(tipo_escena, metricas):
             ],
             "fft": {"activo": False, "tipo": "lowpass", "cutoff": 0.15},
             "mejoras": [
-                {"tipo": MEJORAS_OPCIONES[3]},
-                {"tipo": MEJORAS_OPCIONES[0], "gamma": 0.7},
+                {"tipo": "Ecualización Uniforme"},
+                {"tipo": "Corrección Gamma", "gamma": 0.7},
             ],
             "umbral": {"metodo": "Kapur", "invertir": True, "params": {}},
             "razon": (
@@ -2347,13 +2347,13 @@ def sugerir_pipeline(tipo_escena, metricas):
             "fft": {"activo": True, "tipo": "highpass", "cutoff": 0.04},
             "mejoras": [
                 {
-                    "tipo": MEJORAS_OPCIONES[2],
+                    "tipo": "Contracción / Expansión",
                     "a_in":  max(0,   int(metricas["min_px"]) + 5),
                     "b_in":  min(255, int(metricas["max_px"]) - 5),
                     "a_out": 0,
                     "b_out": 255,
                 },
-                {"tipo": MEJORAS_OPCIONES[3]},
+                {"tipo": "Ecualización Uniforme"},
             ],
             "umbral": {"metodo": "Media", "invertir": False, "params": {}},
             "razon": (
@@ -2385,11 +2385,11 @@ def sugerir_pipeline(tipo_escena, metricas):
     # Mejoras: si los picos están bien separados basta con un gamma suave;
     # si están comprimidos, primero HE para separarlos, luego gamma.
     if separacion_picos > 45:
-        mejoras_mod = [{"tipo": MEJORAS_OPCIONES[0], "gamma": 1.4}]
+        mejoras_mod = [{"tipo": "Corrección Gamma", "gamma": 1.4}]
     else:
         mejoras_mod = [
-            {"tipo": MEJORAS_OPCIONES[3]},
-            {"tipo": MEJORAS_OPCIONES[0], "gamma": 1.3},
+            {"tipo": "Ecualización Uniforme"},
+            {"tipo": "Corrección Gamma", "gamma": 1.3},
         ]
 
     # Umbral e inversión adaptados a la distribución de zonas tonal.
@@ -2500,3 +2500,141 @@ def ejecutar_pipeline_sugerido(imagen_gris, imagen_rgb, pipeline_dict):
         "img_binarizada": img_binarizada,
         "umbral_info":    umbral_info,
     }
+
+
+# =============================================================================
+# ANÁLISIS MULTI-OBJETO
+# =============================================================================
+
+def analizar_multiples_objetos(mascara_binaria, conectividad=8, min_area=800):
+    """Analiza todos los componentes conexos de la máscara y clasifica cada uno.
+
+    Itera todos los componentes encontrados por CCL (excepto el fondo),
+    descarta los que no alcanzan el área mínima, y para cada candidato
+    calcula descriptores geométricos, simetría bilateral y clasificación.
+
+    Parameters
+    ----------
+    mascara_binaria : np.ndarray
+        Máscara binaria (H, W) uint8 con valores 0 y 255.
+    conectividad : int
+        4 u 8. Conectividad para cv2.connectedComponentsWithStats.
+    min_area : int
+        Área mínima en píxeles para considerar un componente como candidato.
+
+    Returns
+    -------
+    list[dict]
+        Lista de resultados ordenada por simetría principal descendente.
+        Cada dict contiene:
+            idx           : int — índice del componente en la etiqueta CCL.
+            mascara       : np.ndarray — máscara binaria de ese componente.
+            area          : int — área en píxeles.
+            elongacion    : float — elongación (ancho/alto o alto/ancho ≥ 1).
+            bbox          : tuple — (x, y, w, h) bounding box.
+            centroide     : tuple — (cx, cy) en píxeles.
+            simetria_v    : float — índice de simetría vertical (IoU).
+            simetria_h    : float — índice de simetría horizontal (IoU).
+            simetria_principal : float — max(simetria_v, simetria_h).
+            theta         : float — ángulo del eje principal en grados.
+            etiqueta      : str — texto con emoji de la clasificación.
+            tipo          : str — "success" | "warning" | "error".
+    """
+    # Aplicar CCL
+    etiquetas, stats, n_componentes = aplicar_ccl(mascara_binaria, conectividad)
+    resultados = []
+
+    for idx in range(1, n_componentes):  # 0 = fondo
+        area = int(stats[idx, cv2.CC_STAT_AREA])
+        if area < min_area:
+            continue
+
+        # Extraer máscara del componente
+        mascara_comp = extraer_componente_por_indice(mascara_binaria, etiquetas, idx)
+
+        # Descriptores geométricos
+        x   = int(stats[idx, cv2.CC_STAT_LEFT])
+        y   = int(stats[idx, cv2.CC_STAT_TOP])
+        w   = int(stats[idx, cv2.CC_STAT_WIDTH])
+        h   = int(stats[idx, cv2.CC_STAT_HEIGHT])
+        elong = max(w, h) / max(min(w, h), 1)
+
+        # Simetría bilateral en ambos ejes
+        simetria_v, simetria_h, theta, cx, cy = calcular_ambos_ejes_simetria(mascara_comp)
+        simetria_principal = max(simetria_v, simetria_h)
+
+        # Clasificación
+        etiqueta, tipo = clasificar_por_simetria(simetria_v, simetria_h, area, elong)
+
+        resultados.append({
+            "idx":                idx,
+            "mascara":            mascara_comp,
+            "area":               area,
+            "elongacion":         round(elong, 2),
+            "bbox":               (x, y, w, h),
+            "centroide":          (round(cx), round(cy)),
+            "simetria_v":         round(simetria_v, 4),
+            "simetria_h":         round(simetria_h, 4),
+            "simetria_principal": round(simetria_principal, 4),
+            "theta":              round(theta, 1),
+            "etiqueta":           etiqueta,
+            "tipo":               tipo,
+        })
+
+    # Ordenar: primero probable botella, luego por simetría descendente
+    resultados.sort(key=lambda r: r["simetria_principal"], reverse=True)
+    return resultados
+
+
+def dibujar_todos_contornos(imagen_rgb, resultados):
+    """Dibuja contornos de colores sobre la imagen original por clasificación.
+
+    Superpone el contorno de cada objeto detectado con un color según
+    su clasificación:
+        Verde   (0, 255, 0) → "success"  — Probable Botella PET
+        Naranja (255,165, 0) → "warning" — Posible botella
+        Rojo    (255,  0, 0) → "error"   — No parece botella
+
+    El contorno se extrae con operación morfológica MORPH_GRADIENT
+    (dilatación - erosión con kernel elíptico 3×3).
+
+    Parameters
+    ----------
+    imagen_rgb : np.ndarray
+        Imagen original RGB (H, W, 3) uint8.
+    resultados : list[dict]
+        Lista devuelta por analizar_multiples_objetos().
+
+    Returns
+    -------
+    np.ndarray
+        Copia de imagen_rgb con los contornos superpuestos.
+    """
+    img_out = imagen_rgb.copy()
+    kernel  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+
+    colores = {
+        "success": (0,   255, 0),    # verde
+        "warning": (255, 165, 0),    # naranja
+        "error":   (255, 0,   0),    # rojo
+    }
+
+    for r in resultados:
+        color   = colores.get(r["tipo"], (128, 128, 128))
+        contorno = cv2.morphologyEx(r["mascara"], cv2.MORPH_GRADIENT, kernel)
+        img_out[contorno > 0] = color
+
+        # Dibujar etiqueta del número en el centroide
+        cx, cy = r["centroide"]
+        cv2.putText(
+            img_out,
+            str(r["idx"]),
+            (cx, cy),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
+
+    return img_out

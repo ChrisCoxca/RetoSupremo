@@ -64,6 +64,9 @@ from procesamiento import (
     clasificar_escena,
     sugerir_pipeline,
     ejecutar_pipeline_sugerido,
+    # Análisis multi-objeto
+    analizar_multiples_objetos,
+    dibujar_todos_contornos,
 )
 
 
@@ -2210,6 +2213,115 @@ def main() -> None:
             "✅ Análisis completo. Pipeline de 7 fases ejecutado.",
             icon="🏁",
         )
+
+        # ─Paso 8 · Análisis Multi-Objeto
+        st.divider()
+        st.markdown("## 🔍 Paso 8 · Detección Multi-Objeto")
+        st.caption(
+            "Analiza todos los componentes conexos de la máscara binaria "
+            "y clasifica cada uno independientemente como botella PET."
+        )
+
+        col_mo1, col_mo2 = st.columns([1, 3])
+        with col_mo1:
+            min_area_mo = st.slider(
+                "Área mínima (px²)",
+                min_value=200, max_value=5000,
+                value=800, step=100,
+                key="slider_min_area_multiobj",
+                help="Componentes con menos píxeles serán ignorados.",
+            )
+        with col_mo2:
+            st.info(
+                "🟢 **Verde** = Probable Botella PET  ·  "
+                "🟠 **Naranja** = Posible botella  ·  "
+                "🔴 **Rojo** = No parece botella",
+                icon="🔍",
+            )
+
+        mascara_mo = st.session_state.get("img_binarizada")
+        if mascara_mo is None:
+            st.warning("⚠️ Ejecuta la Fase 5 (segmentación) primero.")
+        else:
+            with st.spinner("🔍 Analizando todos los objetos…"):
+                resultados_mo = analizar_multiples_objetos(
+                    mascara_mo,
+                    conectividad=st.session_state.get("radio_ccl_con", 8),
+                    min_area=min_area_mo,
+                )
+
+            n_total    = len(resultados_mo)
+            n_probable = sum(1 for r in resultados_mo if r["tipo"] == "success")
+            n_posible  = sum(1 for r in resultados_mo if r["tipo"] == "warning")
+            n_no       = sum(1 for r in resultados_mo if r["tipo"] == "error")
+
+            cm1, cm2, cm3, cm4 = st.columns(4)
+            cm1.metric("Objetos detectados",     n_total)
+            cm2.metric("✅ Probable Botella PET", n_probable)
+            cm3.metric("⚠️ Posible botella",      n_posible)
+            cm4.metric("❌ No es botella",         n_no)
+
+            if n_total == 0:
+                st.warning(
+                    "No se encontraron objetos con esa área mínima. "
+                    "Prueba reducir el slider.",
+                    icon="⚠️",
+                )
+            else:
+                st.markdown("### Imagen con todos los objetos detectados")
+                img_contornos = dibujar_todos_contornos(imagen_rgb, resultados_mo)
+                st.image(img_contornos, channels="RGB", width="stretch", clamp=True)
+                st.caption(
+                    "El número en cada contorno corresponde al índice "
+                    "del componente en la tabla de abajo."
+                )
+
+                st.markdown("### 📋 Tabla de objetos detectados")
+                import pandas as pd
+                tabla = pd.DataFrame([
+                    {
+                        "Obj.":         r["idx"],
+                        "Área (px²)":  r["area"],
+                        "Elongación":  r["elongacion"],
+                        "Sim. V":       r["simetria_v"],
+                        "Sim. H":       r["simetria_h"],
+                        "Sim. Princ.":  r["simetria_principal"],
+                        "Eje (°)":     r["theta"],
+                        "Centroide":    str(r["centroide"]),
+                        "Clasificación": r["etiqueta"],
+                    }
+                    for r in resultados_mo
+                ])
+                st.dataframe(tabla, use_container_width=True, hide_index=True, key="df_multiobj")
+
+                if 1 <= n_total <= 8:
+                    st.markdown("### 🖼️ Galería de objetos detectados")
+                    n_cols = min(n_total, 4)
+                    cols_g = st.columns(n_cols)
+                    for gi, r in enumerate(resultados_mo):
+                        with cols_g[gi % n_cols]:
+                            border_color = (
+                                "#22c55e" if r["tipo"] == "success"
+                                else "#f97316" if r["tipo"] == "warning"
+                                else "#ef4444"
+                            )
+                            x, y, w_b, h_b = r["bbox"]
+                            pad = 10
+                            H_img, W_img = imagen_rgb.shape[:2]
+                            x1 = max(0, x - pad)
+                            y1 = max(0, y - pad)
+                            x2 = min(W_img, x + w_b + pad)
+                            y2 = min(H_img, y + h_b + pad)
+                            recorte = imagen_rgb[y1:y2, x1:x2]
+                            st.image(recorte, channels="RGB", width="stretch", clamp=True)
+                            st.markdown(
+                                f'<div style="border-left:3px solid {border_color};padding-left:6px;">'
+                                f'<b>Obj.&nbsp;{r["idx"]}</b>&nbsp;·&nbsp;{r["etiqueta"]}<br>'
+                                f'Sim={r["simetria_principal"]:.3f}&nbsp;·&nbsp;'
+                                f'Área={r["area"]:,}&nbsp;px²'
+                                '</div>',
+                                unsafe_allow_html=True,
+                            )
 
 
 # =============================================================================
