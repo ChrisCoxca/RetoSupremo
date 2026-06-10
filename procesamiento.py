@@ -1985,7 +1985,14 @@ def analizar_histograma(imagen_rgb, imagen_gris):
     # > 0.30  → colores vivos (agua turquesa, botella de color)
     max_c            = imagen_rgb.max(axis=2).astype(np.float32)
     min_c            = imagen_rgb.min(axis=2).astype(np.float32)
-    sat_map          = np.where(max_c > 0, (max_c - min_c) / max_c, 0.0)
+    # np.divide con where evita el RuntimeWarning por division entre cero:
+    # np.where evalua ambas ramas antes de seleccionar, pero np.divide
+    # solo opera donde la condicion es True.
+    sat_map          = np.divide(
+        max_c - min_c, max_c,
+        out=np.zeros_like(max_c),
+        where=max_c > 0,
+    )
     saturacion_media = float(sat_map.mean())
 
     # Clasificación del tipo de fondo hídrico por color dominante
@@ -2208,7 +2215,7 @@ def sugerir_pipeline(tipo_escena, metricas):
             ],
             "fft": {"activo": True, "tipo": "lowpass", "cutoff": 0.20},
             "mejoras": [
-                {"tipo": "Corrección Gamma", "gamma": 2.0},
+                {"tipo": MEJORAS_OPCIONES[0], "gamma": 2.0},
             ],
             "umbral": {"metodo": "Otsu", "invertir": False, "params": {}},
             "razon": (
@@ -2232,8 +2239,8 @@ def sugerir_pipeline(tipo_escena, metricas):
             ],
             "fft": {"activo": False, "tipo": "lowpass", "cutoff": 0.15},
             "mejoras": [
-                {"tipo": "Ecualización Uniforme"},
-                {"tipo": "Corrección Gamma", "gamma": 0.65},
+                {"tipo": MEJORAS_OPCIONES[3]},
+                {"tipo": MEJORAS_OPCIONES[0], "gamma": 0.65},
             ],
             "umbral": {"metodo": "Kapur", "invertir": True, "params": {}},
             "razon": (
@@ -2259,13 +2266,13 @@ def sugerir_pipeline(tipo_escena, metricas):
             "fft": {"activo": True, "tipo": "highpass", "cutoff": 0.06},
             "mejoras": [
                 {
-                    "tipo": "Contracción / Expansión",
+                    "tipo": MEJORAS_OPCIONES[2],
                     "a_in":  max(0,   int(metricas["pico_dominante"]) - 35),
                     "b_in":  min(255, int(metricas["pico_dominante"]) + 35),
                     "a_out": 0,
                     "b_out": 255,
                 },
-                {"tipo": "Ecualización Log. Hiperbólica"},
+                {"tipo": MEJORAS_OPCIONES[5]},
             ],
             "umbral": {
                 "metodo":   "Media",
@@ -2292,7 +2299,7 @@ def sugerir_pipeline(tipo_escena, metricas):
             ],
             "fft": {"activo": True, "tipo": "lowpass", "cutoff": 0.25},
             "mejoras": [
-                {"tipo": "Corrección Gamma", "gamma": 1.8},
+                {"tipo": MEJORAS_OPCIONES[0], "gamma": 1.8},
             ],
             "umbral": {"metodo": "Otsu", "invertir": False, "params": {}},
             "razon": (
@@ -2316,8 +2323,8 @@ def sugerir_pipeline(tipo_escena, metricas):
             ],
             "fft": {"activo": False, "tipo": "lowpass", "cutoff": 0.15},
             "mejoras": [
-                {"tipo": "Ecualización Uniforme"},
-                {"tipo": "Corrección Gamma", "gamma": 0.7},
+                {"tipo": MEJORAS_OPCIONES[3]},
+                {"tipo": MEJORAS_OPCIONES[0], "gamma": 0.7},
             ],
             "umbral": {"metodo": "Kapur", "invertir": True, "params": {}},
             "razon": (
@@ -2340,13 +2347,13 @@ def sugerir_pipeline(tipo_escena, metricas):
             "fft": {"activo": True, "tipo": "highpass", "cutoff": 0.04},
             "mejoras": [
                 {
-                    "tipo": "Contracción / Expansión",
+                    "tipo": MEJORAS_OPCIONES[2],
                     "a_in":  max(0,   int(metricas["min_px"]) + 5),
                     "b_in":  min(255, int(metricas["max_px"]) - 5),
                     "a_out": 0,
                     "b_out": 255,
                 },
-                {"tipo": "Ecualización Uniforme"},
+                {"tipo": MEJORAS_OPCIONES[3]},
             ],
             "umbral": {"metodo": "Media", "invertir": False, "params": {}},
             "razon": (
@@ -2378,11 +2385,11 @@ def sugerir_pipeline(tipo_escena, metricas):
     # Mejoras: si los picos están bien separados basta con un gamma suave;
     # si están comprimidos, primero HE para separarlos, luego gamma.
     if separacion_picos > 45:
-        mejoras_mod = [{"tipo": "Corrección Gamma", "gamma": 1.4}]
+        mejoras_mod = [{"tipo": MEJORAS_OPCIONES[0], "gamma": 1.4}]
     else:
         mejoras_mod = [
-            {"tipo": "Ecualización Uniforme"},
-            {"tipo": "Corrección Gamma", "gamma": 1.3},
+            {"tipo": MEJORAS_OPCIONES[3]},
+            {"tipo": MEJORAS_OPCIONES[0], "gamma": 1.3},
         ]
 
     # Umbral e inversión adaptados a la distribución de zonas tonal.
