@@ -1,15 +1,15 @@
 # =============================================================================
 # procesamiento.py
-# MÃ³dulo de lÃ³gica de procesamiento de imÃ¡genes para el Dashboard de
-# SegmentaciÃ³n de Botellas PET en cuerpos de agua.
+# Módulo de lógica de procesamiento de imágenes para el Dashboard de
+# Segmentación de Botellas PET en cuerpos de agua.
 #
 # REGLA: Este archivo NO importa Streamlit. Solo OpenCV, NumPy y Plotly.
 #
-# Fase 1   : carga, redimensiÃ³n y conversiÃ³n de color.
-# Fase 2   : conversiÃ³n a escala de grises.
+# Fase 1   : carga, redimensión y conversión de color.
+# Fase 2   : conversión a escala de grises.
 # Fase 3   : filtros espaciales acumulativos (7 filtros).
 # Fase 3.5 : filtrado en frecuencia (FFT lowpass / highpass).
-# Fase 4   : mejora de contraste y brillo (6 tÃ©cnicas con LUT).
+# Fase 4   : mejora de contraste y brillo (6 técnicas con LUT).
 # =============================================================================
 
 import cv2
@@ -19,28 +19,28 @@ from scipy.ndimage import maximum_filter, minimum_filter, gaussian_filter1d
 from scipy.signal import find_peaks
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # CONSTANTES GLOBALES
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
-# Ancho mÃ¡ximo permitido antes de redimensionar (en pÃ­xeles)
+# Ancho máximo permitido antes de redimensionar (en píxeles)
 MAX_ANCHO_PX = 800
 
 
 # =============================================================================
-# FASE 1 â€” Carga y preprocesado bÃ¡sico
+# FASE 1 — Carga y preprocesado básico
 # =============================================================================
 
 def redimensionar_imagen(imagen_bgr: np.ndarray) -> np.ndarray:
     """
     Redimensiona la imagen si su ancho supera MAX_ANCHO_PX,
-    manteniendo la relaciÃ³n de aspecto original.
+    manteniendo la relación de aspecto original.
 
-    Se usa INTER_AREA porque es la interpolaciÃ³n Ã³ptima al REDUCIR
-    imÃ¡genes: minimiza el aliasing y produce mejor calidad que
+    Se usa INTER_AREA porque es la interpolación óptima al REDUCIR
+    imágenes: minimiza el aliasing y produce mejor calidad que
     INTER_LINEAR al hacer downscaling.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_bgr : np.ndarray
         Imagen en formato BGR (tal como la carga OpenCV).
@@ -53,7 +53,7 @@ def redimensionar_imagen(imagen_bgr: np.ndarray) -> np.ndarray:
     """
     alto_original, ancho_original = imagen_bgr.shape[:2]
 
-    # Si la imagen ya cabe dentro del lÃ­mite, la devolvemos sin cambios
+    # Si la imagen ya cabe dentro del límite, la devolvemos sin cambios
     if ancho_original <= MAX_ANCHO_PX:
         return imagen_bgr
 
@@ -72,11 +72,11 @@ def bgr_a_rgb(imagen_bgr: np.ndarray) -> np.ndarray:
     """
     Convierte una imagen del formato BGR (OpenCV) al formato RGB (Streamlit).
 
-    OpenCV carga imÃ¡genes en BGR por razones histÃ³ricas.
+    OpenCV carga imágenes en BGR por razones históricas.
     Streamlit y Matplotlib esperan RGB.
-    Esta conversiÃ³n es necesaria antes de cualquier visualizaciÃ³n.
+    Esta conversión es necesaria antes de cualquier visualización.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_bgr : np.ndarray
         Imagen en formato BGR.
@@ -92,9 +92,9 @@ def bgr_a_rgb(imagen_bgr: np.ndarray) -> np.ndarray:
 def bgr_a_gris_directo(imagen_bgr: np.ndarray) -> np.ndarray:
     """
     Convierte directamente una imagen BGR a escala de grises.
-    FunciÃ³n auxiliar para el pipeline de carga.
+    Función auxiliar para el pipeline de carga.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_bgr : np.ndarray
         Imagen en formato BGR.
@@ -108,23 +108,23 @@ def bgr_a_gris_directo(imagen_bgr: np.ndarray) -> np.ndarray:
 
 
 # =============================================================================
-# FASE 2 â€” ConversiÃ³n a escala de grises
+# FASE 2 — Conversión a escala de grises
 # =============================================================================
 
 def convertir_a_gris(imagen_bgr: np.ndarray) -> np.ndarray:
     """
-    Convierte una imagen BGR a escala de grises usando ponderaciÃ³n perceptual.
+    Convierte una imagen BGR a escala de grises usando ponderación perceptual.
 
-    FÃ³rmula ITU-R BT.601 (estÃ¡ndar televisiÃ³n):
-        I_gris = 0.299Â·R + 0.587Â·G + 0.114Â·B
+    Fórmula ITU-R BT.601 (estándar televisión):
+        I_gris = 0.299·R + 0.587·G + 0.114·B
 
     Los coeficientes reflejan la sensibilidad del ojo humano:
-    - Verde recibe mayor peso (0.587) por ser el mÃ¡s visible
+    - Verde recibe mayor peso (0.587) por ser el más visible
     - Azul recibe menor peso (0.114) por ser el menos visible
-    Esta ponderaciÃ³n produce una percepciÃ³n de brillo mÃ¡s natural
+    Esta ponderación produce una percepción de brillo más natural
     que el promedio simple (R+G+B)/3.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_bgr : np.ndarray
         Imagen en formato BGR.
@@ -138,24 +138,24 @@ def convertir_a_gris(imagen_bgr: np.ndarray) -> np.ndarray:
 
 
 # =============================================================================
-# HISTOGRAMA â€” VisualizaciÃ³n con Plotly
+# HISTOGRAMA — Visualización con Plotly
 # =============================================================================
 
 def calcular_histograma(imagen: np.ndarray) -> go.Figure:
     """
-    Calcula y devuelve un grÃ¡fico Plotly con el histograma de la imagen.
+    Calcula y devuelve un gráfico Plotly con el histograma de la imagen.
 
-    Comportamiento segÃºn el tipo de imagen:
-    - imagen 2D (escala de grises) â†’ un solo canal en gris
-    - imagen 3D RGB (HÃ—WÃ—3)       â†’ tres canales superpuestos R, G, B
+    Comportamiento según el tipo de imagen:
+    - imagen 2D (escala de grises) → un solo canal en gris
+    - imagen 3D RGB (H×W×3)       → tres canales superpuestos R, G, B
 
-    Se usa fill="tozeroy" para crear Ã¡reas rellenas bajo las curvas,
-    facilitando la comparaciÃ³n visual entre canales.
+    Se usa fill="tozeroy" para crear áreas rellenas bajo las curvas,
+    facilitando la comparación visual entre canales.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen : np.ndarray
-        Imagen 2D (grises) o 3D RGB. En formato RGB para visualizaciÃ³n.
+        Imagen 2D (grises) o 3D RGB. En formato RGB para visualización.
 
     Retorna
     -------
@@ -170,7 +170,7 @@ def calcular_histograma(imagen: np.ndarray) -> go.Figure:
     fig = go.Figure()
 
     if es_gris:
-        # â”€â”€ Canal Ãºnico (escala de grises) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Canal único (escala de grises) ────────────────────────────────
         canal = imagen.flatten() if imagen.ndim == 2 \
                 else imagen[:, :, 0].flatten()
         hist, bins = np.histogram(canal, bins=256, range=(0, 256))
@@ -186,8 +186,8 @@ def calcular_histograma(imagen: np.ndarray) -> go.Figure:
         ))
 
     else:
-        # â”€â”€ Tres canales RGB superpuestos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        # Nota: la imagen ya estÃ¡ en RGB cuando llega aquÃ­
+        # ── Tres canales RGB superpuestos ─────────────────────────────────
+        # Nota: la imagen ya está en RGB cuando llega aquí
         configuracion_canales = [
             (0, "#ef4444", "rgba(239,68,68,0.2)",  "Rojo (R)"),
             (1, "#22c55e", "rgba(34,197,94,0.2)",  "Verde (G)"),
@@ -207,7 +207,7 @@ def calcular_histograma(imagen: np.ndarray) -> go.Figure:
                 name=nombre,
             ))
 
-    # â”€â”€ Estilo del grÃ¡fico â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Estilo del gráfico ────────────────────────────────────────────────
     fig.update_layout(
         title=dict(text="Histograma", font=dict(size=13)),
         xaxis=dict(title="Intensidad (0-255)", range=[0, 255]),
@@ -224,11 +224,11 @@ def calcular_histograma(imagen: np.ndarray) -> go.Figure:
 
 
 # =============================================================================
-# FASE 3 â€” Filtros espaciales
+# FASE 3 — Filtros espaciales
 # Todas las funciones:
-#   Â· Reciben imagen en escala de grises (np.ndarray 2D, uint8)
-#   Â· Devuelven imagen en escala de grises (np.ndarray 2D, uint8)
-#   Â· Usan BORDER_REFLECT_101 para evitar artefactos en bordes
+#   · Reciben imagen en escala de grises (np.ndarray 2D, uint8)
+#   · Devuelven imagen en escala de grises (np.ndarray 2D, uint8)
+#   · Usan BORDER_REFLECT_101 para evitar artefactos en bordes
 # =============================================================================
 
 def aplicar_gaussiano(
@@ -237,23 +237,23 @@ def aplicar_gaussiano(
     sigma: float = 0.0,
 ) -> np.ndarray:
     """
-    Filtro Gaussiano â€” suavizado con ponderaciÃ³n normal.
+    Filtro Gaussiano — suavizado con ponderación normal.
 
-    Cada pÃ­xel se reemplaza por la media ponderada de su vecindad,
-    donde los pesos siguen una distribuciÃ³n gaussiana. Los pÃ­xeles
-    mÃ¡s cercanos al centro reciben mayor peso.
+    Cada píxel se reemplaza por la media ponderada de su vecindad,
+    donde los pesos siguen una distribución gaussiana. Los píxeles
+    más cercanos al centro reciben mayor peso.
 
-    sigma=0 â†’ OpenCV calcula Ïƒ automÃ¡ticamente:
-        Ïƒ â‰ˆ 0.3Â·((ksize-1)/2 - 1) + 0.8
+    sigma=0 → OpenCV calcula σ automáticamente:
+        σ ≈ 0.3·((ksize-1)/2 - 1) + 0.8
 
-    Ventaja sobre el box filter: mejor preservaciÃ³n de bordes suaves.
-    Desventaja: mÃ¡s costoso computacionalmente.
+    Ventaja sobre el box filter: mejor preservación de bordes suaves.
+    Desventaja: más costoso computacionalmente.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
-    ksize       : int   â€” tamaÃ±o del kernel (debe ser impar).
-    sigma       : float â€” desviaciÃ³n estÃ¡ndar.
+    ksize       : int   — tamaño del kernel (debe ser impar).
+    sigma       : float — desviación estándar.
 
     Retorna
     -------
@@ -272,19 +272,19 @@ def aplicar_mediana(
     ksize: int = 3,
 ) -> np.ndarray:
     """
-    Filtro de Mediana â€” filtro no lineal de orden.
+    Filtro de Mediana — filtro no lineal de orden.
 
-    Reemplaza cada pÃ­xel por la mediana de su vecindad kÃ—k.
+    Reemplaza cada píxel por la mediana de su vecindad k×k.
     Al ser no lineal, es altamente efectivo contra ruido impulsivo
     (sal y pimienta) sin difuminar los bordes.
 
     Para botellas PET en agua: elimina brillos puntuales del sol
     sobre el agua sin destruir el contorno de la botella.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
-    ksize       : int â€” tamaÃ±o del kernel (debe ser impar).
+    ksize       : int — tamaño del kernel (debe ser impar).
 
     Retorna
     -------
@@ -301,28 +301,28 @@ def aplicar_bilateral(
     sigma_space: float = 75.0,
 ) -> np.ndarray:
     """
-    Filtro Bilateral â€” suavizado que PRESERVA BORDES.
+    Filtro Bilateral — suavizado que PRESERVA BORDES.
 
     Combina dos kernels gaussianos:
-    Â· Kernel espacial (sigma_space): pondera por distancia euclidiana.
-      Equivalente a un gaussiano espacial clÃ¡sico.
-    Â· Kernel de rango (sigma_color): pondera por similitud de intensidad.
-      PÃ­xeles con intensidad similar al pÃ­xel central reciben mayor peso.
+    · Kernel espacial (sigma_space): pondera por distancia euclidiana.
+      Equivalente a un gaussiano espacial clásico.
+    · Kernel de rango (sigma_color): pondera por similitud de intensidad.
+      Píxeles con intensidad similar al píxel central reciben mayor peso.
 
-    FÃ³rmula:
-        I_out(p) = Î£_q [G_s(||p-q||) Â· G_r(|I_p-I_q|) Â· I_q]
-                   â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-                   Î£_q [G_s(||p-q||) Â· G_r(|I_p-I_q|)]
+    Fórmula:
+        I_out(p) = Σ_q [G_s(||p-q||) · G_r(|I_p-I_q|) · I_q]
+                   ──────────────────────────────────────────────
+                   Σ_q [G_s(||p-q||) · G_r(|I_p-I_q|)]
 
-    Para botellas en agua: preserva el borde nÃ­tido entre la botella
+    Para botellas en agua: preserva el borde nítido entre la botella
     y el agua mientras suaviza la textura interna del agua.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris  : np.ndarray 2D uint8
-    d            : int   â€” diÃ¡metro de la vecindad.
-    sigma_color  : float â€” Ïƒ en espacio de intensidades.
-    sigma_space  : float â€” Ïƒ en espacio cartesiano.
+    d            : int   — diámetro de la vecindad.
+    sigma_color  : float — σ en espacio de intensidades.
+    sigma_space  : float — σ en espacio cartesiano.
 
     Retorna
     -------
@@ -343,18 +343,18 @@ def aplicar_paso_bajas(
     """
     Filtro de Paso Bajas con kernel de caja uniforme (box filter).
 
-    MatemÃ¡ticamente equivalente a la convoluciÃ³n con:
-        K = (1/kÂ²) Â· J_{kÃ—k}
+    Matemáticamente equivalente a la convolución con:
+        K = (1/k²) · J_{k×k}
     donde J es una matriz de unos.
 
-    Todos los pÃ­xeles de la vecindad tienen el mismo peso (1/kÂ²).
+    Todos los píxeles de la vecindad tienen el mismo peso (1/k²).
     Elimina altas frecuencias (detalles, textura del agua) pero
     tiende a difuminar los bordes de la botella.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
-    ksize       : int â€” tamaÃ±o del kernel (impar).
+    ksize       : int — tamaño del kernel (impar).
 
     Retorna
     -------
@@ -372,18 +372,18 @@ def aplicar_promediador(
     ksize: int = 3,
 ) -> np.ndarray:
     """
-    Filtro Promediador â€” box filter con kernel NumPy explÃ­cito.
+    Filtro Promediador — box filter con kernel NumPy explícito.
 
-    Conceptualmente idÃ©ntico a aplicar_paso_bajas pero el kernel
-    se construye explÃ­citamente con NumPy para mostrar la mecÃ¡nica
-    de la convoluciÃ³n con kernel personalizado.
+    Conceptualmente idéntico a aplicar_paso_bajas pero el kernel
+    se construye explícitamente con NumPy para mostrar la mecánica
+    de la convolución con kernel personalizado.
 
-    Kernel: K = ones(k,k) / kÂ²
+    Kernel: K = ones(k,k) / k²
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
-    ksize       : int â€” tamaÃ±o del kernel (impar).
+    ksize       : int — tamaño del kernel (impar).
 
     Retorna
     -------
@@ -403,19 +403,19 @@ def aplicar_max(
     ksize: int = 3,
 ) -> np.ndarray:
     """
-    Filtro de MÃ¡ximo â€” dilataciÃ³n morfolÃ³gica.
+    Filtro de Máximo — dilatación morfológica.
 
-    Reemplaza cada pÃ­xel por el valor mÃ¡ximo en su vecindad kÃ—k.
+    Reemplaza cada píxel por el valor máximo en su vecindad k×k.
     Efecto: expande las zonas brillantes, elimina manchas oscuras
-    pequeÃ±as (pimienta).
+    pequeñas (pimienta).
 
     Para botellas transparentes: puede realzar los brillos sobre
     la botella y distinguirlos del fondo oscuro del agua.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
-    ksize       : int â€” tamaÃ±o de la ventana.
+    ksize       : int — tamaño de la ventana.
 
     Retorna
     -------
@@ -433,19 +433,19 @@ def aplicar_min(
     ksize: int = 3,
 ) -> np.ndarray:
     """
-    Filtro de MÃ­nimo â€” erosiÃ³n morfolÃ³gica.
+    Filtro de Mínimo — erosión morfológica.
 
-    Reemplaza cada pÃ­xel por el valor mÃ­nimo en su vecindad kÃ—k.
+    Reemplaza cada píxel por el valor mínimo en su vecindad k×k.
     Efecto: expande las zonas oscuras, elimina manchas brillantes
-    pequeÃ±as (sal).
+    pequeñas (sal).
 
     Para botellas: puede oscurecer la textura del agua y hacer
-    mÃ¡s homogÃ©neo el fondo antes de la segmentaciÃ³n.
+    más homogéneo el fondo antes de la segmentación.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
-    ksize       : int â€” tamaÃ±o de la ventana.
+    ksize       : int — tamaño de la ventana.
 
     Retorna
     -------
@@ -458,9 +458,9 @@ def aplicar_min(
     ).astype(np.uint8)
 
 
-# â”€â”€ Dispatcher central de filtros â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Dispatcher central de filtros ────────────────────────────────────────────
 
-# Mapeo nombre â†’ funciÃ³n para el dispatcher
+# Mapeo nombre → función para el dispatcher
 _FILTROS_DISPONIBLES = {
     "Gaussiano":  aplicar_gaussiano,
     "Mediana":    aplicar_mediana,
@@ -479,11 +479,11 @@ def aplicar_filtro(imagen_gris: np.ndarray, config: dict) -> np.ndarray:
     """
     Dispatcher central de la Fase 3.
 
-    Recibe un diccionario de configuraciÃ³n con al menos la clave "tipo"
-    y delega a la funciÃ³n correspondiente pasando el resto del dict
+    Recibe un diccionario de configuración con al menos la clave "tipo"
+    y delega a la función correspondiente pasando el resto del dict
     como kwargs.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
         Imagen de entrada en escala de grises.
@@ -504,10 +504,10 @@ def aplicar_filtro(imagen_gris: np.ndarray, config: dict) -> np.ndarray:
     if tipo not in _FILTROS_DISPONIBLES:
         raise ValueError(
             f"Filtro desconocido: '{tipo}'. "
-            f"Opciones vÃ¡lidas: {list(_FILTROS_DISPONIBLES.keys())}"
+            f"Opciones válidas: {list(_FILTROS_DISPONIBLES.keys())}"
         )
 
-    # Extraemos todos los parÃ¡metros excepto "tipo"
+    # Extraemos todos los parámetros excepto "tipo"
     kwargs = {k: v for k, v in config.items() if k != "tipo"}
 
     return _FILTROS_DISPONIBLES[tipo](imagen_gris, **kwargs)
@@ -515,17 +515,17 @@ def aplicar_filtro(imagen_gris: np.ndarray, config: dict) -> np.ndarray:
 
 def descripcion_filtro(tipo: str, config: dict) -> str:
     """
-    Devuelve una descripciÃ³n didÃ¡ctica del filtro aplicado para
-    mostrar debajo de cada paso en el Ã¡rea principal.
+    Devuelve una descripción didáctica del filtro aplicado para
+    mostrar debajo de cada paso en el área principal.
 
-    ParÃ¡metros
+    Parámetros
     ----------
-    tipo   : str  â€” nombre del filtro.
-    config : dict â€” configuraciÃ³n completa.
+    tipo   : str  — nombre del filtro.
+    config : dict — configuración completa.
 
     Retorna
     -------
-    str â€” descripciÃ³n en formato Markdown.
+    str — descripción en formato Markdown.
     """
     k  = config.get("ksize", 3)
     d  = config.get("d", 9)
@@ -535,50 +535,50 @@ def descripcion_filtro(tipo: str, config: dict) -> str:
 
     descripciones = {
         "Gaussiano": (
-            f"**Gaussiano** (ksize={k}Ã—{k}, Ïƒ={sg}). "
-            "Suavizado con ponderaciÃ³n gaussiana. Reduce la textura del agua "
+            f"**Gaussiano** (ksize={k}×{k}, σ={sg}). "
+            "Suavizado con ponderación gaussiana. Reduce la textura del agua "
             "preservando los bordes suaves de la botella. "
-            "Mayor ksize = mayor suavizado pero mÃ¡s difuminado de bordes."
+            "Mayor ksize = mayor suavizado pero más difuminado de bordes."
         ),
         "Mediana": (
-            f"**Mediana** (ksize={k}Ã—{k}). Filtro no lineal. "
+            f"**Mediana** (ksize={k}×{k}). Filtro no lineal. "
             "Elimina brillos puntuales del sol sobre el agua sin afectar "
             "significativamente el borde de la botella. "
-            "Ideal como primer filtro para imÃ¡genes con reflejos."
+            "Ideal como primer filtro para imágenes con reflejos."
         ),
         "Bilateral": (
-            f"**Bilateral** (d={d}, Ïƒ_color={sc}, Ïƒ_space={ss}). "
-            "Suaviza manteniendo bordes nÃ­tidos. Excelente para homogenizar "
+            f"**Bilateral** (d={d}, σ_color={sc}, σ_space={ss}). "
+            "Suaviza manteniendo bordes nítidos. Excelente para homogenizar "
             "la textura del agua sin difuminar el contorno de la botella. "
-            f"Ïƒ_color={sc}: {'bordes muy preservados' if sc < 50 else 'suavizado moderado'}."
+            f"σ_color={sc}: {'bordes muy preservados' if sc < 50 else 'suavizado moderado'}."
         ),
         "Paso Bajas": (
-            f"**Paso Bajas / Box filter** ({k}Ã—{k}). "
-            "Todos los pÃ­xeles de la vecindad tienen el mismo peso (1/kÂ²). "
+            f"**Paso Bajas / Box filter** ({k}×{k}). "
+            "Todos los píxeles de la vecindad tienen el mismo peso (1/k²). "
             "Reduce variaciones de alta frecuencia (textura del agua). "
             "Puede difuminar los bordes de la botella."
         ),
         "Promediador": (
-            f"**Promediador** ({k}Ã—{k}). "
-            "Kernel explÃ­cito ones(k,k)/kÂ². Equivalente al Paso Bajas. "
-            "Ãštil para homogenizar regiones del agua antes de umbralizar."
+            f"**Promediador** ({k}×{k}). "
+            "Kernel explícito ones(k,k)/k². Equivalente al Paso Bajas. "
+            "Útil para homogenizar regiones del agua antes de umbralizar."
         ),
         "Max": (
-            f"**MÃ¡ximo / DilataciÃ³n** ({k}Ã—{k}). "
+            f"**Máximo / Dilatación** ({k}×{k}). "
             "Expande zonas brillantes. Puede realzar la botella clara "
-            "sobre fondo oscuro. Elimina manchas oscuras pequeÃ±as."
+            "sobre fondo oscuro. Elimina manchas oscuras pequeñas."
         ),
         "Min": (
-            f"**MÃ­nimo / ErosiÃ³n** ({k}Ã—{k}). "
+            f"**Mínimo / Erosión** ({k}×{k}). "
             "Expande zonas oscuras. Homogeniza el fondo de agua "
-            "antes de la segmentaciÃ³n. Elimina brillos puntuales pequeÃ±os."
+            "antes de la segmentación. Elimina brillos puntuales pequeños."
         ),
     }
     return descripciones.get(tipo, "Filtro aplicado.")
 
 
 # =============================================================================
-# FASE 3.5 â€” Filtrado en frecuencia (FFT)
+# FASE 3.5 — Filtrado en frecuencia (FFT)
 # =============================================================================
 
 def fft_filter(
@@ -591,43 +591,43 @@ def fft_filter(
     de la frecuencia usando la Transformada de Fourier Discreta 2D.
 
     Pasos internos:
-    1. np.fft.fft2  â†’ transforma la imagen al dominio de frecuencias.
-    2. np.fft.fftshift â†’ desplaza la componente DC al centro.
-    3. MÃ¡scara circular: radio = cutoff Ã— min(H, W) / 2.
-       lowpass  â†’ M=1 dentro del cÃ­rculo (pasa bajas).
-       highpass â†’ M=0 dentro del cÃ­rculo (pasa altas).
-    4. Multiplicar espectro Ã— mÃ¡scara.
-    5. np.fft.ifftshift + np.fft.ifft2 â†’ volver al dominio espacial.
+    1. np.fft.fft2  → transforma la imagen al dominio de frecuencias.
+    2. np.fft.fftshift → desplaza la componente DC al centro.
+    3. Máscara circular: radio = cutoff × min(H, W) / 2.
+       lowpass  → M=1 dentro del círculo (pasa bajas).
+       highpass → M=0 dentro del círculo (pasa altas).
+    4. Multiplicar espectro × máscara.
+    5. np.fft.ifftshift + np.fft.ifft2 → volver al dominio espacial.
     6. Tomar parte real, recortar a [0,255] y convertir a uint8.
 
     Espectro de magnitud:
         S = log(1 + |F_shifted|), normalizado a [0, 255] uint8.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
         Imagen en escala de grises.
     cutoff : float
-        FracciÃ³n del radio mÃ­nimo (0.01â€“1.00) que define el corte.
-        cutoff=0.15 â†’ radio = 15 % del semiancho mÃ¡s pequeÃ±o.
+        Fracción del radio mínimo (0.01–1.00) que define el corte.
+        cutoff=0.15 → radio = 15 % del semiancho más pequeño.
     tipo : str
-        "lowpass"  â†’ elimina altas frecuencias (suaviza).
-        "highpass" â†’ elimina bajas frecuencias (realza bordes).
+        "lowpass"  → elimina altas frecuencias (suaviza).
+        "highpass" → elimina bajas frecuencias (realza bordes).
 
     Retorna
     -------
     (img_filtrada, mascara, espectro_mag) : tuple de np.ndarray
-        img_filtrada : np.ndarray 2D uint8  â€” resultado espacial.
-        mascara      : np.ndarray 2D float  â€” mÃ¡scara binaria [0,1].
-        espectro_mag : np.ndarray 2D uint8  â€” espectro de magnitud.
+        img_filtrada : np.ndarray 2D uint8  — resultado espacial.
+        mascara      : np.ndarray 2D float  — máscara binaria [0,1].
+        espectro_mag : np.ndarray 2D uint8  — espectro de magnitud.
     """
     H, W = imagen_gris.shape
 
-    # â”€â”€ 1. Transformada de Fourier y desplazamiento al centro â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 1. Transformada de Fourier y desplazamiento al centro ─────────────────
     F = np.fft.fft2(imagen_gris.astype(np.float64))
     F_shifted = np.fft.fftshift(F)
 
-    # â”€â”€ 2. Espectro de magnitud (para visualizaciÃ³n) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 2. Espectro de magnitud (para visualización) ──────────────────────────
     magnitud = np.abs(F_shifted)
     espectro_log = np.log1p(magnitud)   # log(1 + |F|)
     # Normalizar a [0, 255]
@@ -638,7 +638,7 @@ def fft_filter(
         espectro_norm = espectro_log * 0.0
     espectro_mag = (espectro_norm * 255).astype(np.uint8)
 
-    # â”€â”€ 3. MÃ¡scara circular â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 3. Máscara circular ───────────────────────────────────────────────────
     centro_y, centro_x = H // 2, W // 2
     radio = cutoff * min(H, W) / 2.0
 
@@ -653,12 +653,12 @@ def fft_filter(
     else:  # highpass
         mascara = (distancia > radio).astype(np.float64)    # 0 dentro, 1 fuera
 
-    # â”€â”€ 4-5. Filtrado y transformada inversa â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 4-5. Filtrado y transformada inversa ──────────────────────────────────
     F_filtrado = F_shifted * mascara
     F_inv = np.fft.ifftshift(F_filtrado)
     img_reconstruida = np.fft.ifft2(F_inv)
 
-    # â”€â”€ 6. Convertir a uint8 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 6. Convertir a uint8 ──────────────────────────────────────────────────
     img_real = np.real(img_reconstruida)
     img_filtrada = np.clip(img_real, 0, 255).astype(np.uint8)
 
@@ -671,28 +671,28 @@ def crear_espectro_con_mascara(
 ) -> np.ndarray:
     """
     Convierte el espectro de magnitud a RGB y dibuja el borde de la
-    mÃ¡scara circular en rojo sobre Ã©l para facilitar la interpretaciÃ³n.
+    máscara circular en rojo sobre él para facilitar la interpretación.
 
-    El borde se extrae con una operaciÃ³n morfolÃ³gica MORPH_GRADIENT
-    (dilataciÃ³n - erosiÃ³n) con kernel 3Ã—3, que devuelve solo los
-    pÃ­xeles de transiciÃ³n de la mÃ¡scara.
+    El borde se extrae con una operación morfológica MORPH_GRADIENT
+    (dilatación - erosión) con kernel 3×3, que devuelve solo los
+    píxeles de transición de la máscara.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     espectro_mag : np.ndarray 2D uint8
         Espectro de magnitud normalizado.
     mascara : np.ndarray 2D float
-        MÃ¡scara binaria [0.0, 1.0] generada por fft_filter.
+        Máscara binaria [0.0, 1.0] generada por fft_filter.
 
     Retorna
     -------
-    np.ndarray 3D uint8 (H Ã— W Ã— 3)
-        Espectro en RGB con borde de la mÃ¡scara resaltado en rojo.
+    np.ndarray 3D uint8 (H × W × 3)
+        Espectro en RGB con borde de la máscara resaltado en rojo.
     """
-    # Convertir espectro gris â†’ RGB (3 canales)
+    # Convertir espectro gris → RGB (3 canales)
     espectro_rgb = cv2.cvtColor(espectro_mag, cv2.COLOR_GRAY2RGB)
 
-    # Borde de la mÃ¡scara: MORPH_GRADIENT = dilataciÃ³n - erosiÃ³n
+    # Borde de la máscara: MORPH_GRADIENT = dilatación - erosión
     kernel_borde = np.ones((3, 3), dtype=np.uint8)
     mascara_u8 = (mascara * 255).astype(np.uint8)
     borde = cv2.morphologyEx(mascara_u8, cv2.MORPH_GRADIENT, kernel_borde)
@@ -704,20 +704,20 @@ def crear_espectro_con_mascara(
 
 
 # =============================================================================
-# FASE 4 â€” Enhancement (mejora de contraste y brillo)
+# FASE 4 — Enhancement (mejora de contraste y brillo)
 # Todas las funciones:
-#   Â· Usan LUT de 256 entradas con cv2.LUT para mÃ¡xima eficiencia.
-#   Â· Reciben np.ndarray 2D uint8 y devuelven np.ndarray 2D uint8.
+#   · Usan LUT de 256 entradas con cv2.LUT para máxima eficiencia.
+#   · Reciben np.ndarray 2D uint8 y devuelven np.ndarray 2D uint8.
 # =============================================================================
 
 # Lista de opciones exportada al sidebar de app.py
 MEJORAS_OPCIONES = [
-    "CorrecciÃ³n Gamma",
+    "Corrección Gamma",
     "Desplazamiento (Brillo)",
-    "ContracciÃ³n / ExpansiÃ³n",
-    "EcualizaciÃ³n Uniforme",
-    "EcualizaciÃ³n Rayleigh",
-    "EcualizaciÃ³n Log. HiperbÃ³lica",
+    "Contracción / Expansión",
+    "Ecualización Uniforme",
+    "Ecualización Rayleigh",
+    "Ecualización Log. Hiperbólica",
 ]
 
 
@@ -726,7 +726,7 @@ def _construir_lut(valores: np.ndarray) -> np.ndarray:
     Construye una LUT de 256 entradas a partir de un array de 256 flotantes.
     Recorta a [0,255] y convierte a uint8.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     valores : np.ndarray de forma (256,) con floats en [0, 255].
 
@@ -742,17 +742,17 @@ def mejora_gamma(
     gamma: float = 1.5,
 ) -> np.ndarray:
     """
-    CorrecciÃ³n gamma:
-        I_out = (I / 255)^Î³ Ã— 255
+    Corrección gamma:
+        I_out = (I / 255)^γ × 255
 
-    Î³ < 1 â†’ aclarar (realza sombras).
-    Î³ > 1 â†’ oscurecer (comprime luces).
-    Î³ = 1 â†’ identidad.
+    γ < 1 → aclarar (realza sombras).
+    γ > 1 → oscurecer (comprime luces).
+    γ = 1 → identidad.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
-    gamma       : float â€” exponente de correcciÃ³n.
+    gamma       : float — exponente de corrección.
 
     Retorna
     -------
@@ -770,15 +770,15 @@ def mejora_desplazamiento(
 ) -> np.ndarray:
     """
     Desplazamiento de brillo (suma constante):
-        I_out = clip(I + Î”, 0, 255)
+        I_out = clip(I + Δ, 0, 255)
 
-    Î´ > 0 â†’ imagen mÃ¡s brillante.
-    Î´ < 0 â†’ imagen mÃ¡s oscura.
+    δ > 0 → imagen más brillante.
+    δ < 0 → imagen más oscura.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
-    delta       : int â€” desplazamiento en intensidad (âˆ’255 a +255).
+    delta       : int — desplazamiento en intensidad (−255 a +255).
 
     Retorna
     -------
@@ -797,20 +797,20 @@ def mejora_contraccion_expansion(
     b_out: int = 255,
 ) -> np.ndarray:
     """
-    Mapeo lineal por tramos (contracciÃ³n / expansiÃ³n de contraste):
+    Mapeo lineal por tramos (contracción / expansión de contraste):
 
-      I < a_in               â†’ a_out
-      a_in <= I <= b_in      â†’ lineal: a_out + (I - a_in) Ã— (b_out - a_out) / (b_in - a_in)
-      I > b_in               â†’ b_out
+      I < a_in               → a_out
+      a_in <= I <= b_in      → lineal: a_out + (I - a_in) × (b_out - a_out) / (b_in - a_in)
+      I > b_in               → b_out
 
-    Permite expandir un rango de interÃ©s [a_in, b_in] hacia [a_out, b_out],
+    Permite expandir un rango de interés [a_in, b_in] hacia [a_out, b_out],
     aumentando el contraste dentro de ese rango.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
-    a_in, b_in  : int â€” rango de entrada (a_in < b_in).
-    a_out, b_out: int â€” rango de salida.
+    a_in, b_in  : int — rango de entrada (a_in < b_in).
+    a_out, b_out: int — rango de salida.
 
     Retorna
     -------
@@ -838,15 +838,15 @@ def mejora_ecual_uniforme(
     imagen_gris: np.ndarray,
 ) -> np.ndarray:
     """
-    EcualizaciÃ³n de histograma uniforme (estÃ¡ndar).
+    Ecualización de histograma uniforme (estándar).
 
-    Redistribuye las intensidades para que el histograma sea lo mÃ¡s
+    Redistribuye las intensidades para que el histograma sea lo más
     plano posible. Maximiza el contraste global pero puede amplificar
-    ruido en regiones homogÃ©neas.
+    ruido en regiones homogéneas.
 
-    Usa cv2.equalizeHist (implementaciÃ³n optimizada de OpenCV).
+    Usa cv2.equalizeHist (implementación optimizada de OpenCV).
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
 
@@ -861,14 +861,14 @@ def mejora_ecual_rayleigh(
     imagen_gris: np.ndarray,
 ) -> np.ndarray:
     """
-    EcualizaciÃ³n con distribuciÃ³n Rayleigh (curva raÃ­z cuadrada):
-        I_out = 255 Ã— âˆš(I / 255)
+    Ecualización con distribución Rayleigh (curva raíz cuadrada):
+        I_out = 255 × √(I / 255)
 
     Variante no lineal que aclarar la imagen de forma suave.
-    MÃ¡s conservadora que la ecualizaciÃ³n uniforme: no corta las
+    Más conservadora que la ecualización uniforme: no corta las
     distribuciones bimodales abruptamente.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
 
@@ -885,14 +885,14 @@ def mejora_ecual_log_hiperbolica(
     imagen_gris: np.ndarray,
 ) -> np.ndarray:
     """
-    EcualizaciÃ³n logarÃ­tmica hiperbÃ³lica:
-        I_out = 255 Ã— log(1 + I) / log(256)
+    Ecualización logarítmica hiperbólica:
+        I_out = 255 × log(1 + I) / log(256)
 
-    La curva logarÃ­tmica comprime los valores altos y expande los
+    La curva logarítmica comprime los valores altos y expande los
     bajos, realzando los detalles en zonas oscuras de la imagen.
-    Ãštil para imÃ¡genes subexpuestas con reflejos de agua.
+    Útil para imágenes subexpuestas con reflejos de agua.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
 
@@ -905,16 +905,16 @@ def mejora_ecual_log_hiperbolica(
     return cv2.LUT(imagen_gris, lut)
 
 
-# â”€â”€ Dispatcher central de mejoras â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Dispatcher central de mejoras ─────────────────────────────────────────────
 
-# Mapeo nombre â†’ funciÃ³n para el dispatcher
+# Mapeo nombre → función para el dispatcher
 _MEJORAS_DISPONIBLES = {
-    "CorrecciÃ³n Gamma":           mejora_gamma,
+    "Corrección Gamma":           mejora_gamma,
     "Desplazamiento (Brillo)":    mejora_desplazamiento,
-    "ContracciÃ³n / ExpansiÃ³n":    mejora_contraccion_expansion,
-    "EcualizaciÃ³n Uniforme":      mejora_ecual_uniforme,
-    "EcualizaciÃ³n Rayleigh":      mejora_ecual_rayleigh,
-    "EcualizaciÃ³n Log. HiperbÃ³lica": mejora_ecual_log_hiperbolica,
+    "Contracción / Expansión":    mejora_contraccion_expansion,
+    "Ecualización Uniforme":      mejora_ecual_uniforme,
+    "Ecualización Rayleigh":      mejora_ecual_rayleigh,
+    "Ecualización Log. Hiperbólica": mejora_ecual_log_hiperbolica,
 }
 
 
@@ -923,12 +923,12 @@ def aplicar_mejora(imagen_gris: np.ndarray, config: dict) -> np.ndarray:
     Dispatcher central de la Fase 4.
 
     Recibe un diccionario con al menos la clave "tipo" y delega
-    a la funciÃ³n de mejora correspondiente.
+    a la función de mejora correspondiente.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
-    config      : dict â€” {"tipo": str, <params>: val, ...}
+    config      : dict — {"tipo": str, <params>: val, ...}
 
     Retorna
     -------
@@ -942,10 +942,10 @@ def aplicar_mejora(imagen_gris: np.ndarray, config: dict) -> np.ndarray:
     if tipo not in _MEJORAS_DISPONIBLES:
         raise ValueError(
             f"Mejora desconocida: '{tipo}'. "
-            f"Opciones vÃ¡lidas: {list(_MEJORAS_DISPONIBLES.keys())}"
+            f"Opciones válidas: {list(_MEJORAS_DISPONIBLES.keys())}"
         )
 
-    # Extraemos todos los parÃ¡metros excepto "tipo"
+    # Extraemos todos los parámetros excepto "tipo"
     kwargs = {k: v for k, v in config.items() if k != "tipo"}
     return _MEJORAS_DISPONIBLES[tipo](imagen_gris, **kwargs)
 
@@ -957,15 +957,15 @@ def calcular_histograma_comparativo(
     """
     Superpone dos histogramas en escala de grises:
     - Rojo  = imagen de entrada (antes de la mejora).
-    - Azul  = imagen de salida  (despuÃ©s de la mejora).
+    - Azul  = imagen de salida  (después de la mejora).
 
-    Permite comparar visualmente cÃ³mo la mejora redistribuye
+    Permite comparar visualmente cómo la mejora redistribuye
     las intensidades.
 
-    ParÃ¡metros
+    Parámetros
     ----------
-    img_antes   : np.ndarray 2D uint8 â€” imagen sin mejora.
-    img_despues : np.ndarray 2D uint8 â€” imagen mejorada.
+    img_antes   : np.ndarray 2D uint8 — imagen sin mejora.
+    img_despues : np.ndarray 2D uint8 — imagen mejorada.
 
     Retorna
     -------
@@ -973,7 +973,7 @@ def calcular_histograma_comparativo(
     """
     fig = go.Figure()
 
-    # â”€â”€ Canal "antes" en rojo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Canal "antes" en rojo ─────────────────────────────────────────────────
     hist_antes, bins = np.histogram(
         img_antes.flatten(), bins=256, range=(0, 256)
     )
@@ -987,7 +987,7 @@ def calcular_histograma_comparativo(
         name="Antes",
     ))
 
-    # â”€â”€ Canal "despuÃ©s" en azul â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Canal "después" en azul ───────────────────────────────────────────────
     hist_despues, _ = np.histogram(
         img_despues.flatten(), bins=256, range=(0, 256)
     )
@@ -998,13 +998,13 @@ def calcular_histograma_comparativo(
         fill="tozeroy",
         line=dict(color="#60a5fa", width=1.5),
         fillcolor="rgba(96,165,250,0.2)",
-        name="DespuÃ©s",
+        name="Después",
     ))
 
-    # â”€â”€ Estilo del grÃ¡fico â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Estilo del gráfico ────────────────────────────────────────────────────
     fig.update_layout(
         title=dict(text="Histograma comparativo", font=dict(size=13)),
-        xaxis=dict(title="Intensidad (0â€“255)", range=[0, 255]),
+        xaxis=dict(title="Intensidad (0–255)", range=[0, 255]),
         yaxis=dict(title="Frecuencia"),
         margin=dict(l=10, r=10, t=40, b=30),
         legend=dict(orientation="h", y=-0.3),
@@ -1018,7 +1018,7 @@ def calcular_histograma_comparativo(
 
 
 # =============================================================================
-# FASE 5 â€” SegmentaciÃ³n por umbralizaciÃ³n y morfologÃ­a
+# FASE 5 — Segmentación por umbralización y morfología
 # =============================================================================
 
 # Constantes exportadas para la UI
@@ -1028,12 +1028,12 @@ METODOS_AUTOMATICOS   = {"Otsu", "Kapur", "Media"}
 
 def umbralizar_otsu(imagen_gris: np.ndarray) -> tuple:
     """
-    Umbraliza la imagen usando el mÃ©todo de Otsu.
+    Umbraliza la imagen usando el método de Otsu.
 
-    Otsu maximiza la varianza inter-clase buscando el umbral Ã³ptimo
-    de manera automÃ¡tica a partir del histograma de la imagen.
+    Otsu maximiza la varianza inter-clase buscando el umbral óptimo
+    de manera automática a partir del histograma de la imagen.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
         Imagen en escala de grises.
@@ -1041,8 +1041,8 @@ def umbralizar_otsu(imagen_gris: np.ndarray) -> tuple:
     Retorna
     -------
     (binaria, info) : tuple
-        binaria : np.ndarray 2D uint8 â€” mÃ¡scara binaria 0/255.
-        info    : dict â€” {"umbral": int} con el valor encontrado por Otsu.
+        binaria : np.ndarray 2D uint8 — máscara binaria 0/255.
+        info    : dict — {"umbral": int} con el valor encontrado por Otsu.
     """
     thresh_val, binaria = cv2.threshold(
         imagen_gris,
@@ -1056,15 +1056,15 @@ def umbralizar_otsu(imagen_gris: np.ndarray) -> tuple:
 
 def umbralizar_kapur(imagen_gris: np.ndarray) -> tuple:
     """
-    Umbraliza la imagen usando la entropÃ­a de Kapur (mÃ¡xima entropÃ­a).
+    Umbraliza la imagen usando la entropía de Kapur (máxima entropía).
 
-    El mÃ©todo itera sobre todos los umbrales candidatos (1â€“254) y elige
-    el valor t* que maximiza la entropÃ­a total de la imagen dividida en
+    El método itera sobre todos los umbrales candidatos (1–254) y elige
+    el valor t* que maximiza la entropía total de la imagen dividida en
     dos regiones: fondo (0..t*-1) y objeto (t*..255).
 
-    H_total(t) = p1 * (âˆ’Î£ p1nÂ·log(p1n+Îµ)) + p2 * (âˆ’Î£ p2nÂ·log(p2n+Îµ))
+    H_total(t) = p1 * (−Σ p1n·log(p1n+ε)) + p2 * (−Σ p2n·log(p2n+ε))
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
 
@@ -1072,7 +1072,7 @@ def umbralizar_kapur(imagen_gris: np.ndarray) -> tuple:
     -------
     (binaria, info) : tuple
         binaria  : np.ndarray 2D uint8
-        info     : dict â€” {"umbral": int, "entropia_max": float}
+        info     : dict — {"umbral": int, "entropia_max": float}
     """
     # Histograma normalizado (probabilidades)
     hist, _ = np.histogram(imagen_gris.flatten(), bins=256, range=(0, 256))
@@ -1082,7 +1082,7 @@ def umbralizar_kapur(imagen_gris: np.ndarray) -> tuple:
     umbral_opt = 127
 
     for t in range(1, 255):
-        # RegiÃ³n 1: [0, t-1]
+        # Región 1: [0, t-1]
         p1_vec = prob[:t]
         P1     = p1_vec.sum()
         if P1 <= 0:
@@ -1090,7 +1090,7 @@ def umbralizar_kapur(imagen_gris: np.ndarray) -> tuple:
         p1_norm  = p1_vec / P1
         H1 = -np.sum(p1_norm * np.log(p1_norm + 1e-12))
 
-        # RegiÃ³n 2: [t, 255]
+        # Región 2: [t, 255]
         p2_vec = prob[t:]
         P2     = p2_vec.sum()
         if P2 <= 0:
@@ -1119,7 +1119,7 @@ def umbralizar_media(imagen_gris: np.ndarray) -> tuple:
 
     Umbral = round(mean(imagen_gris)).
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
 
@@ -1127,7 +1127,7 @@ def umbralizar_media(imagen_gris: np.ndarray) -> tuple:
     -------
     (binaria, info) : tuple
         binaria : np.ndarray 2D uint8
-        info    : dict â€” {"umbral": int, "media": float}
+        info    : dict — {"umbral": int, "media": float}
     """
     media   = float(np.mean(imagen_gris))
     umbral  = int(round(media))
@@ -1140,16 +1140,16 @@ def umbralizar_manual(imagen_gris: np.ndarray, umbral: int = 127) -> tuple:
     """
     Umbraliza usando un umbral definido manualmente por el usuario.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
-    umbral      : int  â€” valor entre 0 y 255.
+    umbral      : int  — valor entre 0 y 255.
 
     Retorna
     -------
     (binaria, info) : tuple
         binaria : np.ndarray 2D uint8
-        info    : dict â€” {"umbral": int}
+        info    : dict — {"umbral": int}
     """
     _, binaria = cv2.threshold(imagen_gris, umbral, 255, cv2.THRESH_BINARY)
     info = {"umbral": int(umbral)}
@@ -1162,27 +1162,27 @@ def umbralizar_banda(
     t2: int = 200,
 ) -> tuple:
     """
-    UmbralizaciÃ³n por banda de intensidad.
+    Umbralización por banda de intensidad.
 
-    Los pÃ­xeles cuya intensidad cae en [t1, t2] se marcan como 255 (objeto);
-    el resto queda en 0 (fondo). Este mÃ©todo es el mÃ¡s Ãºtil para aislar
+    Los píxeles cuya intensidad cae en [t1, t2] se marcan como 255 (objeto);
+    el resto queda en 0 (fondo). Este método es el más útil para aislar
     botellas PET en cuerpos de agua, porque permite ajustar precisamente
-    el rango de intensidad correspondiente al plÃ¡stico transparente/blanco.
+    el rango de intensidad correspondiente al plástico transparente/blanco.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
-    t1          : int â€” lÃ­mite inferior del rango (inclusive).
-    t2          : int â€” lÃ­mite superior del rango (inclusive), t2 > t1.
+    t1          : int — límite inferior del rango (inclusive).
+    t2          : int — límite superior del rango (inclusive), t2 > t1.
 
     Retorna
     -------
     (binaria, info) : tuple
-        binaria : np.ndarray 2D uint8 â€” mÃ¡scara de banda.
-        info    : dict â€” {"t1": int, "t2": int}
+        binaria : np.ndarray 2D uint8 — máscara de banda.
+        info    : dict — {"t1": int, "t2": int}
     """
     binaria = np.zeros_like(imagen_gris, dtype=np.uint8)
-    # PÃ­xeles dentro del rango [t1, t2] â†’ 255
+    # Píxeles dentro del rango [t1, t2] → 255
     mascara_banda = (imagen_gris >= t1) & (imagen_gris <= t2)
     binaria[mascara_banda] = 255
     info = {"t1": int(t1), "t2": int(t2)}
@@ -1190,24 +1190,24 @@ def umbralizar_banda(
 
 
 # -----------------------------------------------------------------------------
-# MORFOLOGÃA POST-UMBRALIZACIÃ“N â€” operaciones para limpiar la mÃ¡scara binaria
+# MORFOLOGÍA POST-UMBRALIZACIÓN — operaciones para limpiar la máscara binaria
 # -----------------------------------------------------------------------------
 
 def aplicar_cierre(mascara: np.ndarray, ksize: int = 5) -> np.ndarray:
     """
-    Aplica cierre morfolÃ³gico (MORPH_CLOSE) con kernel elÃ­ptico.
+    Aplica cierre morfológico (MORPH_CLOSE) con kernel elíptico.
 
-    El cierre (dilataciÃ³n seguida de erosiÃ³n) rellena pequeÃ±os huecos
+    El cierre (dilatación seguida de erosión) rellena pequeños huecos
     y discontinuidades dentro de los objetos segmentados.
 
-    ParÃ¡metros
+    Parámetros
     ----------
-    mascara : np.ndarray 2D uint8 â€” mÃ¡scara binaria (0/255).
-    ksize   : int â€” tamaÃ±o del kernel cuadrado (debe ser impar).
+    mascara : np.ndarray 2D uint8 — máscara binaria (0/255).
+    ksize   : int — tamaño del kernel cuadrado (debe ser impar).
 
     Retorna
     -------
-    np.ndarray 2D uint8 â€” mÃ¡scara con huecos rellenados.
+    np.ndarray 2D uint8 — máscara con huecos rellenados.
     """
     kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE, (int(ksize), int(ksize))
@@ -1217,19 +1217,19 @@ def aplicar_cierre(mascara: np.ndarray, ksize: int = 5) -> np.ndarray:
 
 def aplicar_apertura(mascara: np.ndarray, ksize: int = 3) -> np.ndarray:
     """
-    Aplica apertura morfolÃ³gica (MORPH_OPEN) con kernel elÃ­ptico.
+    Aplica apertura morfológica (MORPH_OPEN) con kernel elíptico.
 
-    La apertura (erosiÃ³n seguida de dilataciÃ³n) elimina pequeÃ±as manchas
+    La apertura (erosión seguida de dilatación) elimina pequeñas manchas
     de ruido aisladas fuera del objeto principal (botellas).
 
-    ParÃ¡metros
+    Parámetros
     ----------
-    mascara : np.ndarray 2D uint8 â€” mÃ¡scara binaria (0/255).
-    ksize   : int â€” tamaÃ±o del kernel (debe ser impar).
+    mascara : np.ndarray 2D uint8 — máscara binaria (0/255).
+    ksize   : int — tamaño del kernel (debe ser impar).
 
     Retorna
     -------
-    np.ndarray 2D uint8 â€” mÃ¡scara sin ruido pequeÃ±o.
+    np.ndarray 2D uint8 — máscara sin ruido pequeño.
     """
     kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE, (int(ksize), int(ksize))
@@ -1243,34 +1243,34 @@ def aplicar_relleno_huecos(mascara: np.ndarray) -> np.ndarray:
 
     Algoritmo:
     1. Hacer flood-fill desde la esquina superior izquierda (0, 0)
-       sobre una copia con borde de 2px â€” esto pinta el fondo exterior.
-    2. Invertir esa imagen â†’ solo el interior de los objetos queda blanco.
-    3. OR con la mÃ¡scara original â†’ objetos sÃ³lidos sin huecos internos.
+       sobre una copia con borde de 2px — esto pinta el fondo exterior.
+    2. Invertir esa imagen → solo el interior de los objetos queda blanco.
+    3. OR con la máscara original → objetos sólidos sin huecos internos.
 
-    ParÃ¡metros
+    Parámetros
     ----------
-    mascara : np.ndarray 2D uint8 â€” mÃ¡scara binaria (0/255).
+    mascara : np.ndarray 2D uint8 — máscara binaria (0/255).
 
     Retorna
     -------
-    np.ndarray 2D uint8 â€” mÃ¡scara con huecos internos rellenados.
+    np.ndarray 2D uint8 — máscara con huecos internos rellenados.
     """
     h, w = mascara.shape[:2]
-    # Canvas mÃ¡s grande (borde de 2px para que flood-fill no se escape)
+    # Canvas más grande (borde de 2px para que flood-fill no se escape)
     canvas = np.zeros((h + 4, w + 4), dtype=np.uint8)
     canvas[2:h + 2, 2:w + 2] = mascara
 
-    # Flood-fill desde la esquina (0,0) â†’ pinta el fondo exterior
+    # Flood-fill desde la esquina (0,0) → pinta el fondo exterior
     mascara_flood = canvas.copy()
     cv2.floodFill(mascara_flood, None, (0, 0), 255)
 
-    # Invertir â†’ solo quedan blancos los huecos internos
+    # Invertir → solo quedan blancos los huecos internos
     exterior_invertido = cv2.bitwise_not(mascara_flood)
 
-    # Recortar el borde que aÃ±adimos
+    # Recortar el borde que añadimos
     exterior_recortado = exterior_invertido[2:h + 2, 2:w + 2]
 
-    # OR con la mÃ¡scara original: objetos + huecos rellenados
+    # OR con la máscara original: objetos + huecos rellenados
     resultado = cv2.bitwise_or(mascara, exterior_recortado)
     return resultado
 
@@ -1282,28 +1282,28 @@ def aplicar_umbral(
     **kwargs,
 ) -> tuple:
     """
-    Dispatcher central de umbralizaciÃ³n.
+    Dispatcher central de umbralización.
 
-    Enruta la solicitud al mÃ©todo correcto segÃºn el parÃ¡metro `metodo`
-    y opcionalmente invierte la mÃ¡scara resultante.
+    Enruta la solicitud al método correcto según el parámetro `metodo`
+    y opcionalmente invierte la máscara resultante.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_gris : np.ndarray 2D uint8
-    metodo      : str â€” uno de METODOS_UMBRALIZACION.
-    invertir    : bool â€” si True, devuelve (255 âˆ’ binaria).
-    **kwargs    : parÃ¡metros adicionales segÃºn el mÃ©todo:
+    metodo      : str — uno de METODOS_UMBRALIZACION.
+    invertir    : bool — si True, devuelve (255 − binaria).
+    **kwargs    : parámetros adicionales según el método:
                   umbral (Manual), t1/t2 (Banda).
 
     Retorna
     -------
     (binaria, info) : tuple
         binaria : np.ndarray 2D uint8
-        info    : dict con los parÃ¡metros usados.
+        info    : dict con los parámetros usados.
 
     Raises
     ------
-    ValueError si `metodo` no estÃ¡ en METODOS_UMBRALIZACION.
+    ValueError si `metodo` no está en METODOS_UMBRALIZACION.
     """
     if metodo == "Otsu":
         binaria, info = umbralizar_otsu(imagen_gris)
@@ -1320,11 +1320,11 @@ def aplicar_umbral(
         binaria, info = umbralizar_banda(imagen_gris, t1, t2)
     else:
         raise ValueError(
-            f"MÃ©todo desconocido: '{metodo}'. "
-            f"Opciones vÃ¡lidas: {METODOS_UMBRALIZACION}"
+            f"Método desconocido: '{metodo}'. "
+            f"Opciones válidas: {METODOS_UMBRALIZACION}"
         )
 
-    # InversiÃ³n opcional de la mÃ¡scara
+    # Inversión opcional de la máscara
     if invertir:
         binaria = cv2.bitwise_not(binaria)
 
@@ -1332,33 +1332,33 @@ def aplicar_umbral(
 
 
 # =============================================================================
-# FASE 6 â€” AnÃ¡lisis de Componentes Conexos (CCL) y ExtracciÃ³n
+# FASE 6 — Análisis de Componentes Conexos (CCL) y Extracción
 # =============================================================================
 
 def aplicar_ccl(imagen_binaria: np.ndarray, conectividad: int = 8) -> tuple:
     """
-    Aplica el anÃ¡lisis de componentes conexos (CCL) con estadÃ­sticas.
+    Aplica el análisis de componentes conexos (CCL) con estadísticas.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_binaria : np.ndarray 2D uint8
-        Imagen binaria (mÃ¡scara de entrada).
+        Imagen binaria (máscara de entrada).
     conectividad : int
         Tipo de conectividad a evaluar: 4 u 8.
 
     Retorna
     -------
     (n_etiquetas, etiquetas, stats, centroides) : tuple
-        n_etiquetas : int - nÃºmero total de etiquetas encontradas (incluye fondo).
+        n_etiquetas : int - número total de etiquetas encontradas (incluye fondo).
         etiquetas   : np.ndarray 2D de enteros (H x W) - mapa de etiquetas.
-        stats       : np.ndarray (N x 5) - estadÃ­sticas de cada etiqueta.
+        stats       : np.ndarray (N x 5) - estadísticas de cada etiqueta.
         centroides  : np.ndarray (N x 2) - coordenadas (x, y) de los centroides.
     """
     # Asegurar que sea binaria de un solo canal y uint8
     if imagen_binaria.ndim == 3:
         imagen_binaria = cv2.cvtColor(imagen_binaria, cv2.COLOR_BGR2GRAY)
     
-    # Forzar binarizaciÃ³n estricta (pÃ­xeles > 0 se vuelven 255)
+    # Forzar binarización estricta (píxeles > 0 se vuelven 255)
     _, bin_u8 = cv2.threshold(imagen_binaria, 0, 255, cv2.THRESH_BINARY)
     
     n_etiquetas, etiquetas, stats, centroides = cv2.connectedComponentsWithStats(
@@ -1378,12 +1378,12 @@ def generar_mapa_color_ccl(
     Genera una imagen en color RGB a partir de la matriz de etiquetas (label map).
     Asigna un color aleatorio brillante a cada componente y negro (0, 0, 0) al fondo.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     etiquetas : np.ndarray 2D de enteros
-        Matriz donde cada pÃ­xel tiene la etiqueta de su componente.
+        Matriz donde cada píxel tiene la etiqueta de su componente.
     n_etiquetas : int
-        NÃºmero total de etiquetas (incluyendo el fondo 0).
+        Número total de etiquetas (incluyendo el fondo 0).
     semilla : int
         Semilla para el generador pseudo-aleatorio.
 
@@ -1393,7 +1393,7 @@ def generar_mapa_color_ccl(
         Imagen RGB con los componentes coloreados.
     """
     if n_etiquetas <= 1:
-        # Solo hay fondo (o vacÃ­o)
+        # Solo hay fondo (o vacío)
         h, w = etiquetas.shape[:2]
         return np.zeros((h, w, 3), dtype=np.uint8)
 
@@ -1410,14 +1410,14 @@ def generar_mapa_color_ccl(
 
 def calcular_descriptores(stats: np.ndarray, idx: int) -> dict:
     """
-    Calcula los descriptores de forma clÃ¡sicos para un componente especÃ­fico.
+    Calcula los descriptores de forma clásicos para un componente específico.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     stats : np.ndarray
-        Matriz de estadÃ­sticas retornada por cv2.connectedComponentsWithStats.
+        Matriz de estadísticas retornada por cv2.connectedComponentsWithStats.
     idx : int
-        Ãndice del componente conexo.
+        Índice del componente conexo.
 
     Retorna
     -------
@@ -1428,7 +1428,7 @@ def calcular_descriptores(stats: np.ndarray, idx: int) -> dict:
     ancho = int(stats[idx, cv2.CC_STAT_WIDTH])
     alto = int(stats[idx, cv2.CC_STAT_HEIGHT])
     
-    # ElongaciÃ³n: max(ancho, alto) / min(ancho, alto)
+    # Elongación: max(ancho, alto) / min(ancho, alto)
     menor = min(ancho, alto)
     elongacion = float(max(ancho, alto) / menor) if menor > 0 else 0.0
 
@@ -1437,16 +1437,16 @@ def calcular_descriptores(stats: np.ndarray, idx: int) -> dict:
         "ancho": ancho,
         "alto": alto,
         "elongacion": round(elongacion, 4) if elongacion > 0 else 0.0,
-        "circularidad": None,  # Requiere perÃ­metro, no calculado en esta fase
+        "circularidad": None,  # Requiere perímetro, no calculado en esta fase
     }
 
 
 def es_probable_botella(descriptores: dict) -> tuple:
     """
-    EvalÃºa si un componente conexo podrÃ­a ser una botella PET segÃºn sus descriptores.
-    HeurÃ­sticas clÃ¡sicas basadas en el Ã¡rea y la elongaciÃ³n.
+    Evalúa si un componente conexo podría ser una botella PET según sus descriptores.
+    Heurísticas clásicas basadas en el área y la elongación.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     descriptores : dict
         Resultado de calcular_descriptores.
@@ -1455,21 +1455,21 @@ def es_probable_botella(descriptores: dict) -> tuple:
     -------
     (es_botella, razon) : (bool, str)
         es_botella : True si cumple las condiciones de botella PET, False de lo contrario.
-        razon : Texto explicativo sobre la clasificaciÃ³n.
+        razon : Texto explicativo sobre la clasificación.
     """
     area = descriptores["area"]
     elongacion = descriptores["elongacion"]
 
-    # 1. Descartar ruido pequeÃ±o
+    # 1. Descartar ruido pequeño
     if area <= 500:
-        return False, f"Ruido o componente pequeÃ±o (Ãrea: {area} pxÂ² <= 500 pxÂ²)"
+        return False, f"Ruido o componente pequeño (Área: {area} px² <= 500 px²)"
 
-    # 2. Verificar elongaciÃ³n
-    # Las botellas de plÃ¡stico suelen tener una relaciÃ³n de aspecto (elongaciÃ³n) de entre 1.2 y 6.0
+    # 2. Verificar elongación
+    # Las botellas de plástico suelen tener una relación de aspecto (elongación) de entre 1.2 y 6.0
     if not (1.2 <= elongacion <= 6.0):
-        return False, f"Forma no elongada (ElongaciÃ³n: {elongacion} fuera del rango [1.2, 6.0])"
+        return False, f"Forma no elongada (Elongación: {elongacion} fuera del rango [1.2, 6.0])"
 
-    return True, f"Cumple con Ã¡rea ({area} pxÂ²) y elongaciÃ³n ({elongacion} en [1.2, 6.0])"
+    return True, f"Cumple con área ({area} px²) y elongación ({elongacion} en [1.2, 6.0])"
 
 
 def extraer_componente_por_indice(
@@ -1481,28 +1481,28 @@ def extraer_componente_por_indice(
     """
     Aisla un componente conexo por su etiqueta y lo extrae sobre fondo negro.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     etiquetas : np.ndarray 2D
         Matriz de etiquetas.
     stats : np.ndarray
-        Matriz de estadÃ­sticas.
+        Matriz de estadísticas.
     imagen_rgb : np.ndarray 3D
         Imagen a color de referencia.
     idx : int
-        Ãndice del componente a extraer.
+        Índice del componente a extraer.
 
     Retorna
     -------
     (mascara, objeto_color, area_px) : tuple
         mascara : np.ndarray 2D uint8 (0/255)
         objeto_color : np.ndarray 3D uint8 (RGB)
-        area_px : int - Ã¡rea del componente
+        area_px : int - área del componente
     """
-    # Crear mÃ¡scara binaria del componente (0 o 255)
+    # Crear máscara binaria del componente (0 o 255)
     mascara = (etiquetas == idx).astype(np.uint8) * 255
     
-    # Extraer el objeto a color usando la mÃ¡scara de 3 canales
+    # Extraer el objeto a color usando la máscara de 3 canales
     mascara_3ch = cv2.merge([mascara, mascara, mascara])
     objeto_color = cv2.bitwise_and(imagen_rgb, mascara_3ch)
     
@@ -1517,15 +1517,15 @@ def extraer_componente_mayor(
     imagen_rgb: np.ndarray,
 ) -> tuple:
     """
-    Encuentra y extrae el componente conexo con mayor Ã¡rea en la imagen,
+    Encuentra y extrae el componente conexo con mayor área en la imagen,
     excluyendo el fondo (etiqueta 0).
 
-    ParÃ¡metros
+    Parámetros
     ----------
     etiquetas : np.ndarray 2D
         Matriz de etiquetas.
     stats : np.ndarray
-        Matriz de estadÃ­sticas.
+        Matriz de estadísticas.
     imagen_rgb : np.ndarray 3D
         Imagen de entrada a color.
 
@@ -1534,20 +1534,20 @@ def extraer_componente_mayor(
     (mascara, objeto_color, idx_principal, area_px) : tuple
         mascara : np.ndarray 2D uint8 (0/255)
         objeto_color : np.ndarray 3D uint8
-        idx_principal : int - Ã­ndice de la etiqueta del componente mayor
-        area_px : int - Ã¡rea del componente mayor
+        idx_principal : int - índice de la etiqueta del componente mayor
+        area_px : int - área del componente mayor
     """
     n_etiquetas = stats.shape[0]
     
-    # Si solo hay fondo (etiqueta 0), retornar imÃ¡genes vacÃ­as
+    # Si solo hay fondo (etiqueta 0), retornar imágenes vacías
     if n_etiquetas <= 1:
         h, w = etiquetas.shape[:2]
         mascara = np.zeros((h, w), dtype=np.uint8)
         objeto_color = np.zeros((h, w, 3), dtype=np.uint8)
         return mascara, objeto_color, 0, 0
 
-    # Encontrar la etiqueta con mayor Ã¡rea excluyendo la 0 (fondo)
-    # stats[1:, cv2.CC_STAT_AREA] nos da el Ã¡rea de las etiquetas 1 a n-1
+    # Encontrar la etiqueta con mayor área excluyendo la 0 (fondo)
+    # stats[1:, cv2.CC_STAT_AREA] nos da el área de las etiquetas 1 a n-1
     areas_objeto = stats[1:, cv2.CC_STAT_AREA]
     if len(areas_objeto) == 0:
         h, w = etiquetas.shape[:2]
@@ -1571,18 +1571,18 @@ def dibujar_contorno(
     grosor: int = 2,
 ) -> np.ndarray:
     """
-    Dibuja el contorno exterior de una mÃ¡scara binaria sobre la imagen a color.
+    Dibuja el contorno exterior de una máscara binaria sobre la imagen a color.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     imagen_rgb : np.ndarray 3D
         Imagen a color de base (RGB).
     mascara : np.ndarray 2D uint8
-        MÃ¡scara binaria del objeto (0/255).
+        Máscara binaria del objeto (0/255).
     color : tuple
         Color del contorno en formato RGB (R, G, B).
     grosor : int
-        Grosor de la lÃ­nea del contorno en pÃ­xeles.
+        Grosor de la línea del contorno en píxeles.
 
     Retorna
     -------
@@ -1608,43 +1608,43 @@ def dibujar_contorno(
 
 
 # =============================================================================
-# FASE 7 â€” AnÃ¡lisis de SimetrÃ­a Bilateral
-# Confirma matemÃ¡ticamente si el objeto segmentado es una botella PET
-# mediante el Ã­ndice de simetrÃ­a IoU (IntersecciÃ³n sobre UniÃ³n).
+# FASE 7 — Análisis de Simetría Bilateral
+# Confirma matemáticamente si el objeto segmentado es una botella PET
+# mediante el índice de simetría IoU (Intersección sobre Unión).
 # =============================================================================
 
 def calcular_eje_simetria(mascara_binaria: np.ndarray) -> tuple:
     """
-    Calcula el centroide y el eje principal de simetrÃ­a de una mÃ¡scara binaria
+    Calcula el centroide y el eje principal de simetría de una máscara binaria
     usando momentos invariantes de imagen.
 
     Pasos:
-    1. cv2.moments(mascara) â†’ M00, M10, M01 para el centroide.
-    2. Momentos centrales Î¼20, Î¼02, Î¼11 â†’ orientaciÃ³n del eje principal.
-    3. theta = 0.5 Â· arctan2(2Â·Î¼11, Î¼20 âˆ’ Î¼02) en grados.
+    1. cv2.moments(mascara) → M00, M10, M01 para el centroide.
+    2. Momentos centrales μ20, μ02, μ11 → orientación del eje principal.
+    3. theta = 0.5 · arctan2(2·μ11, μ20 − μ02) en grados.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     mascara_binaria : np.ndarray 2D uint8
-        MÃ¡scara binaria (0/255) del componente.
+        Máscara binaria (0/255) del componente.
 
     Retorna
     -------
     (cx, cy, theta) : tuple
-        cx    : float â€” coordenada X del centroide.
-        cy    : float â€” coordenada Y del centroide.
-        theta : float â€” Ã¡ngulo del eje principal en grados (âˆ’90Â° a +90Â°).
+        cx    : float — coordenada X del centroide.
+        cy    : float — coordenada Y del centroide.
+        theta : float — ángulo del eje principal en grados (−90° a +90°).
     """
     # Calcular momentos de la imagen binaria
     momentos = cv2.moments(mascara_binaria)
 
-    # Evitar divisiÃ³n por cero si la mÃ¡scara estÃ¡ vacÃ­a
+    # Evitar división por cero si la máscara está vacía
     M00 = momentos["m00"]
     if M00 == 0:
         h, w = mascara_binaria.shape[:2]
         return float(w / 2), float(h / 2), 0.0
 
-    # Centroide geomÃ©trico
+    # Centroide geométrico
     cx = momentos["m10"] / M00
     cy = momentos["m01"] / M00
 
@@ -1653,7 +1653,7 @@ def calcular_eje_simetria(mascara_binaria: np.ndarray) -> tuple:
     mu02 = momentos["m02"] / M00 - cy ** 2   # varianza en Y
     mu11 = momentos["m11"] / M00 - cx * cy   # covarianza XY
 
-    # Ãngulo del eje principal (fÃ³rmula de la elipse equivalente)
+    # Ángulo del eje principal (fórmula de la elipse equivalente)
     theta = 0.5 * np.degrees(np.arctan2(2.0 * mu11, mu20 - mu02))
 
     return float(cx), float(cy), float(theta)
@@ -1664,47 +1664,47 @@ def calcular_indice_simetria(
     eje: str = "vertical",
 ) -> float:
     """
-    Calcula el Ã­ndice de simetrÃ­a IoU (IntersecciÃ³n / UniÃ³n) de la mÃ¡scara
-    respecto a un eje de reflexiÃ³n.
+    Calcula el índice de simetría IoU (Intersección / Unión) de la máscara
+    respecto a un eje de reflexión.
 
     Procedimiento:
-    1. Voltear la mÃ¡scara respecto al eje indicado.
-    2. Calcular la intersecciÃ³n binaria (AND) y la uniÃ³n binaria (OR).
-    3. Ãndice = |IntersecciÃ³n| / |UniÃ³n|   (Jaccard / IoU de simetrÃ­a).
+    1. Voltear la máscara respecto al eje indicado.
+    2. Calcular la intersección binaria (AND) y la unión binaria (OR).
+    3. Índice = |Intersección| / |Unión|   (Jaccard / IoU de simetría).
 
-    InterpretaciÃ³n orientativa para botellas PET:
-      > 0.85 â†’ simetrÃ­a alta (muy probable botella cilÃ­ndrica)
-      0.70â€“0.85 â†’ simetrÃ­a media (botella deformada o parcialmente oculta)
-      < 0.70  â†’ simetrÃ­a baja (probablemente no es botella)
+    Interpretación orientativa para botellas PET:
+      > 0.85 → simetría alta (muy probable botella cilíndrica)
+      0.70–0.85 → simetría media (botella deformada o parcialmente oculta)
+      < 0.70  → simetría baja (probablemente no es botella)
 
-    ParÃ¡metros
+    Parámetros
     ----------
     mascara_binaria : np.ndarray 2D uint8
-        MÃ¡scara binaria (0/255).
+        Máscara binaria (0/255).
     eje : str
-        "vertical"   â†’ reflexiÃ³n respecto al eje vertical (flip horizontal, code=1).
-        "horizontal" â†’ reflexiÃ³n respecto al eje horizontal (flip vertical, code=0).
+        "vertical"   → reflexión respecto al eje vertical (flip horizontal, code=1).
+        "horizontal" → reflexión respecto al eje horizontal (flip vertical, code=0).
 
     Retorna
     -------
-    float en [0, 1] â€” Ã­ndice de simetrÃ­a IoU.
+    float en [0, 1] — índice de simetría IoU.
     """
-    # Seleccionar el cÃ³digo de flip segÃºn el eje
+    # Seleccionar el código de flip según el eje
     # cv2.flip(src, flipCode):
-    #   flipCode=1  â†’ espejo horizontal (refleja sobre el eje vertical central)
-    #   flipCode=0  â†’ espejo vertical   (refleja sobre el eje horizontal central)
+    #   flipCode=1  → espejo horizontal (refleja sobre el eje vertical central)
+    #   flipCode=0  → espejo vertical   (refleja sobre el eje horizontal central)
     flip_code = 1 if eje == "vertical" else 0
     mascara_volteada = cv2.flip(mascara_binaria, flip_code)
 
-    # IntersecciÃ³n (pÃ­xeles que coinciden en ambas mitades)
+    # Intersección (píxeles que coinciden en ambas mitades)
     interseccion = cv2.bitwise_and(mascara_binaria, mascara_volteada)
-    # UniÃ³n (pÃ­xeles presentes en cualquiera de las dos)
+    # Unión (píxeles presentes en cualquiera de las dos)
     union = cv2.bitwise_or(mascara_binaria, mascara_volteada)
 
     n_inter = float(np.sum(interseccion > 0))
     n_union = float(np.sum(union > 0))
 
-    # Evitar divisiÃ³n por cero si la mÃ¡scara estÃ¡ vacÃ­a
+    # Evitar división por cero si la máscara está vacía
     if n_union == 0:
         return 0.0
 
@@ -1790,43 +1790,43 @@ def visualizar_simetria(
     theta: float,
 ) -> np.ndarray:
     """
-    Genera una imagen de diagnÃ³stico RGB que muestra la mÃ¡scara binaria
-    con el centroide y el eje de simetrÃ­a superpuestos.
+    Genera una imagen de diagnóstico RGB que muestra la máscara binaria
+    con el centroide y el eje de simetría superpuestos.
 
     Elementos dibujados:
-    Â· MÃ¡scara en blanco sobre fondo negro.
-    Â· Centroide: cÃ­rculo verde (radio = 6 px, grosor = âˆ’1 para relleno).
-    Â· Eje de simetrÃ­a: lÃ­nea roja que cruza toda la imagen pasando por
-      (cx, cy) con la orientaciÃ³n estimada por el Ã¡ngulo theta.
+    · Máscara en blanco sobre fondo negro.
+    · Centroide: círculo verde (radio = 6 px, grosor = −1 para relleno).
+    · Eje de simetría: línea roja que cruza toda la imagen pasando por
+      (cx, cy) con la orientación estimada por el ángulo theta.
 
-    ParÃ¡metros
+    Parámetros
     ----------
     mascara_binaria : np.ndarray 2D uint8
-        MÃ¡scara binaria (0/255).
+        Máscara binaria (0/255).
     cx, cy : float
         Coordenadas del centroide.
     theta : float
-        Ãngulo del eje principal en grados.
+        Ángulo del eje principal en grados.
 
     Retorna
     -------
-    np.ndarray 3D uint8 (H Ã— W Ã— 3) en formato RGB.
+    np.ndarray 3D uint8 (H × W × 3) en formato RGB.
     """
     h, w = mascara_binaria.shape[:2]
 
-    # Crear fondo negro y pintar la mÃ¡scara en gris claro
+    # Crear fondo negro y pintar la máscara en gris claro
     canvas = np.zeros((h, w, 3), dtype=np.uint8)
     canvas[mascara_binaria > 0] = [200, 200, 200]  # gris claro para la silueta
 
-    # â”€â”€ Eje de simetrÃ­a (lÃ­nea roja) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    # Convertir Ã¡ngulo a radianes y calcular el vector director
+    # ── Eje de simetría (línea roja) ──────────────────────────────────────────
+    # Convertir ángulo a radianes y calcular el vector director
     rad = np.radians(theta)
     # Longitud suficiente para cruzar toda la imagen
     longitud = int(max(h, w) * 1.5)
     cos_t = np.cos(rad)
     sin_t = np.sin(rad)
 
-    # Dos puntos extremos de la lÃ­nea centrada en (cx, cy)
+    # Dos puntos extremos de la línea centrada en (cx, cy)
     x1 = int(cx - longitud * cos_t)
     y1 = int(cy - longitud * sin_t)
     x2 = int(cx + longitud * cos_t)
@@ -1834,7 +1834,7 @@ def visualizar_simetria(
 
     cv2.line(canvas, (x1, y1), (x2, y2), (220, 30, 30), 2)  # rojo
 
-    # â”€â”€ Centroide (cÃ­rculo verde relleno) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Centroide (círculo verde relleno) ─────────────────────────────────────
     cv2.circle(canvas, (int(cx), int(cy)), 6, (0, 220, 80), -1)  # verde
     # Anillo exterior blanco para mejorar visibilidad
     cv2.circle(canvas, (int(cx), int(cy)), 8, (255, 255, 255), 1)
@@ -1849,23 +1849,23 @@ def clasificar_por_simetria(
     elongacion: float,
 ) -> tuple:
     """
-    Clasifica el objeto segmentado combinando el Ã­ndice de simetrÃ­a
-    con el Ã¡rea y la elongaciÃ³n calculadas en la Fase 6.
+    Clasifica el objeto segmentado combinando el índice de simetría
+    con el área y la elongación calculadas en la Fase 6.
 
     Reglas (en orden de prioridad):
     1. simetria_v > 0.80 AND area_px > 1000 AND elongacion > 1.3
-       â†’ "âœ… Probable Botella PET" (success)
+       → "✅ Probable Botella PET" (success)
     2. simetria_v > 0.65
-       â†’ "âš ï¸ Posible Botella (verificar)" (warning)
+       → "âš ï¸ Posible Botella (verificar)" (warning)
     3. En cualquier otro caso
-       â†’ "âŒ No parece una botella" (error)
+       → "âŒ No parece una botella" (error)
 
-    ParÃ¡metros
+    Parámetros
     ----------
-    simetria_v  : float â€” Ã­ndice de simetrÃ­a vertical (IoU).
-    simetria_h  : float â€” Ã­ndice de simetrÃ­a horizontal (IoU).
-    area_px     : int   â€” Ã¡rea del componente en pÃ­xeles.
-    elongacion  : float â€” razÃ³n max(ancho,alto)/min(ancho,alto).
+    simetria_v  : float — índice de simetría vertical (IoU).
+    simetria_h  : float — índice de simetría horizontal (IoU).
+    area_px     : int   — área del componente en píxeles.
+    elongacion  : float — razón max(ancho,alto)/min(ancho,alto).
 
     Retorna
     -------
@@ -2541,7 +2541,7 @@ def analizar_multiples_objetos(mascara_binaria, conectividad=8, min_area=800):
             tipo          : str — "success" | "warning" | "error".
     """
     # Aplicar CCL
-    etiquetas, stats, n_componentes = aplicar_ccl(mascara_binaria, conectividad)
+    n_componentes, etiquetas, stats, _ = aplicar_ccl(mascara_binaria, conectividad)
     resultados = []
 
     for idx in range(1, n_componentes):  # 0 = fondo
