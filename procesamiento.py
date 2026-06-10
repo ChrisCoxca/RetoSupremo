@@ -1875,14 +1875,20 @@ def clasificar_por_simetria(
         etiqueta : texto descriptivo con emoji.
         tipo     : "success" | "warning" | "error" (para st.success/warning/error).
     """
-    # El eje de mayor simetria es el relevante: la botella puede estar
-    # en cualquier orientacion antes de la normalizacion por momentos.
     simetria_principal = max(simetria_v, simetria_h)
 
-    if simetria_principal > 0.70 and area_px > 1000 and elongacion > 1.3:
+    # Regla 1: Buena simetría y proporciones de botella
+    if simetria_principal > 0.48 and area_px > 800 and elongacion > 1.2:
         return '✅ Probable Botella PET', 'success'
-    elif simetria_principal > 0.55:
+        
+    # Regla 2: Alta elongación (muy alargada) suele indicar botella aunque la simetría falle por oclusiones/algas
+    elif elongacion > 2.0 and area_px > 1000:
+        return '✅ Probable Botella PET', 'success'
+        
+    # Regla 3: Simetría decente pero pequeña o cortada, o elongación aceptable
+    elif simetria_principal > 0.45 or (elongacion > 1.5 and area_px > 500):
         return '⚠️ Posible Botella (verificar)', 'warning'
+        
     else:
         return '❌ No parece una botella', 'error'
 

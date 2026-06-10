@@ -2314,11 +2314,12 @@ def main() -> None:
                             y2 = min(H_img, y + h_b + pad)
                             recorte = imagen_rgb[y1:y2, x1:x2]
                             st.image(recorte, channels="RGB", width="stretch", clamp=True)
+                            # Etiqueta simplificada para la galería
+                            icono = "✅" if r["tipo"] == "success" else "⚠️" if r["tipo"] == "warning" else "❌"
                             st.markdown(
-                                f'<div style="border-left:3px solid {border_color};padding-left:6px;">'
-                                f'<b>Obj.&nbsp;{r["idx"]}</b>&nbsp;·&nbsp;{r["etiqueta"]}<br>'
-                                f'Sim={r["simetria_principal"]:.3f}&nbsp;·&nbsp;'
-                                f'Área={r["area"]:,}&nbsp;px²'
+                                f'<div style="text-align: center; margin-top: 5px;">'
+                                f'<span style="background-color:{border_color}; color:white; padding: 2px 8px; border-radius: 12px; font-weight: bold; font-size: 0.9em;">'
+                                f'{icono} Obj. {r["idx"]}</span>'
                                 '</div>',
                                 unsafe_allow_html=True,
                             )
