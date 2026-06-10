@@ -2056,7 +2056,7 @@ def main() -> None:
         cx, cy, theta = calcular_eje_simetria(mascara_f7)
 
         # ── 2. Calcular índices de simetría IoU para ambos ejes ───────────────
-        simetria_v, simetria_h = calcular_ambos_ejes_simetria(mascara_f7)
+        simetria_v, simetria_h, _, _, _ = calcular_ambos_ejes_simetria(mascara_f7)
 
         # ── 3. Recuperar descriptores del componente extraído (Fase 6) ─────────
         # Se usa lo almacenado en session_state por la Fase 6

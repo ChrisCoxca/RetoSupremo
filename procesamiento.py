@@ -1771,16 +1771,18 @@ def calcular_ambos_ejes_simetria(mascara_binaria: np.ndarray) -> tuple:
 
     Retorna
     -------
-    (simetria_v, simetria_h) : tuple de float
+    (simetria_v, simetria_h, theta, cx, cy) : tuple
         simetria_v : indice IoU respecto al eje vertical (reflexion horizontal).
         simetria_h : indice IoU respecto al eje horizontal (reflexion vertical).
+        theta      : float - angulo del eje principal en grados.
+        cx, cy     : float - coordenadas del centroide.
     """
     cx, cy, theta = calcular_eje_simetria(mascara_binaria)
     mascara_norm = normalizar_mascara_simetria(mascara_binaria, cx, cy, theta)
 
     simetria_v = calcular_indice_simetria(mascara_norm, eje="vertical")
     simetria_h = calcular_indice_simetria(mascara_norm, eje="horizontal")
-    return simetria_v, simetria_h
+    return simetria_v, simetria_h, theta, cx, cy
 
 
 def visualizar_simetria(
