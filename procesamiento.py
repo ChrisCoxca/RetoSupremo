@@ -2550,7 +2550,7 @@ def analizar_multiples_objetos(mascara_binaria, conectividad=8, min_area=800):
             continue
 
         # Extraer máscara del componente
-        mascara_comp = extraer_componente_por_indice(mascara_binaria, etiquetas, idx)
+        mascara_comp = (etiquetas == idx).astype(np.uint8) * 255
 
         # Descriptores geométricos
         x   = int(stats[idx, cv2.CC_STAT_LEFT])
