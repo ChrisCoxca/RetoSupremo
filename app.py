@@ -59,6 +59,11 @@ from procesamiento import (
     calcular_ambos_ejes_simetria,
     visualizar_simetria,
     clasificar_por_simetria,
+    # Análisis de histograma y pipeline automático
+    analizar_histograma,
+    clasificar_escena,
+    sugerir_pipeline,
+    ejecutar_pipeline_sugerido,
 )
 
 
@@ -139,13 +144,56 @@ if "historial_filtros" not in st.session_state:
 if "historial_mejoras" not in st.session_state:
     st.session_state["historial_mejoras"] = []
 
+# Modo de operación: True = automático, False = manual
+if "modo_auto" not in st.session_state:
+    st.session_state["modo_auto"] = True
+
+# Indica si el pipeline automático ya fue ejecutado en la sesión actual
+if "pipeline_ejecutado" not in st.session_state:
+    st.session_state["pipeline_ejecutado"] = False
+
 
 # =============================================================================
 # 3. BARRA LATERAL (SIDEBAR)
 # =============================================================================
 with st.sidebar:
     st.title("🍶 Botellas PET")
-    st.caption("Dashboard de Segmentación — V1")
+    st.caption("Dashboard de Segmentación — V2")
+    st.divider()
+
+    # =========================================================================
+    # § 0 — MODO DE OPERACIÓN
+    # =========================================================================
+    st.markdown("#### ⚙️ Modo de operación")
+
+    modo_op = st.radio(
+        label="¿Cómo quieres trabajar?",
+        options=["🤖 Automático", "🛠️ Manual"],
+        index=0 if st.session_state["modo_auto"] else 1,
+        horizontal=True,
+        key="radio_modo_operacion",
+        help=(
+            "Automático: el sistema analiza el histograma RGB y sugiere "
+            "el pipeline óptimo. Un botón lo aplica completo.\n"
+            "Manual: tú configuras cada fase individualmente."
+        ),
+    )
+    st.session_state["modo_auto"] = (modo_op == "🤖 Automático")
+
+    if st.session_state["modo_auto"]:
+        st.info(
+            "📊 El sistema analizará el histograma **RGB** para clasificar "
+            "la escena (tipo de agua, contraste, distribución de brillo) "
+            "y sugerirá automáticamente filtros, FFT, mejoras y método "
+            "de umbralización.\n\n"
+            "Pulsa **▶ Ejecutar** en el área principal para aplicarlo.",
+            icon="🤖",
+        )
+    else:
+        st.caption(
+            "🛠️ Configura manualmente cada fase en las secciones de abajo."
+        )
+
     st.divider()
 
     # =========================================================================
@@ -185,6 +233,11 @@ with st.sidebar:
     # =========================================================================
     st.markdown("#### 🧩 Fase 3 — Filtros espaciales")
     st.caption("Cada filtro opera sobre la salida del anterior.")
+    if st.session_state["modo_auto"]:
+        st.caption(
+            "⚙️ En modo automático esta sección es configurada "
+            "por el sistema. Cambia a Manual para ajustar."
+        )
 
     # ── Selector del tipo de filtro ───────────────────────────────────────────
     filtro_elegido = st.selectbox(
@@ -334,6 +387,11 @@ with st.sidebar:
     # =========================================================================
     st.markdown("#### 🌀 Fase 3.5 — Filtro FFT")
     st.caption("Filtra la imagen en el dominio de la frecuencia.")
+    if st.session_state["modo_auto"]:
+        st.caption(
+            "⚙️ En modo automático esta sección es configurada "
+            "por el sistema. Cambia a Manual para ajustar."
+        )
 
     # Checkbox de activación del filtro FFT
     fft_activo = st.checkbox(
@@ -381,6 +439,11 @@ with st.sidebar:
     # =========================================================================
     st.markdown("#### ✨ Fase 4 — Mejora de Contraste")
     st.caption("Cada mejora opera sobre la salida de la anterior.")
+    if st.session_state["modo_auto"]:
+        st.caption(
+            "⚙️ En modo automático esta sección es configurada "
+            "por el sistema. Cambia a Manual para ajustar."
+        )
 
     # Selector de mejora
     mejora_elegida = st.selectbox(
@@ -511,6 +574,11 @@ with st.sidebar:
     # =========================================================================
     st.markdown("#### 🎯 Fase 5 — Segmentación")
     st.caption("Opera sobre `img_mejorada` (salida de Fase 4).")
+    if st.session_state["modo_auto"]:
+        st.caption(
+            "⚙️ En modo automático esta sección es configurada "
+            "por el sistema. Cambia a Manual para ajustar."
+        )
 
     # ── Selector del método de umbralización ─────────────────────────────────
     metodo_umbral = st.selectbox(
@@ -689,10 +757,14 @@ with st.sidebar:
         "Umbral de simetría",
         min_value=0.50,
         max_value=1.00,
-        value=0.80,
+        value=0.70,
         step=0.05,
         key="slider_umbral_simetria",
-        help="Índice IoU mínimo para clasificar el objeto como botella.",
+        help=(
+            "Índice IoU mínimo para clasificar el objeto como botella. "
+            "Se evalúa max(simetría vertical, simetría horizontal) tras "
+            "normalizar la máscara por su eje principal de inercia."
+        ),
     )
 
     st.divider()
@@ -933,6 +1005,299 @@ def main() -> None:
             f"✅ Imagen cargada correctamente · **{ancho} × {alto} px**",
             icon="🖼️",
         )
+
+    # ─────────────────────────────────────────────────────────────────────
+    # ANÁLISIS DUAL DEL HISTOGRAMA (RGB + Grises)
+    # Se ejecuta siempre, en ambos modos (auto y manual).
+    # ─────────────────────────────────────────────────────────────────────
+    metricas = analizar_histograma(imagen_rgb, imagen_gris)
+    tipo_escena, desc_escena, emoji_escena = clasificar_escena(metricas)
+    pipeline_sugerido = sugerir_pipeline(tipo_escena, metricas)
+
+    st.session_state["metricas"]          = metricas
+    st.session_state["tipo_escena"]       = tipo_escena
+    st.session_state["pipeline_sugerido"] = pipeline_sugerido
+
+    # ── Panel de diagnóstico (siempre visible, expandido en modo auto) ────────
+    with st.expander(
+        f"{emoji_escena} Diagnóstico automático — "
+        f"Escena detectada: **{tipo_escena.replace('_',' ').title()}**",
+        expanded=st.session_state["modo_auto"],
+    ):
+        st.caption(desc_escena)
+        st.divider()
+
+        # Métricas del histograma en grises
+        st.markdown("**📊 Métricas del histograma en grises**")
+        cg1, cg2, cg3, cg4 = st.columns(4)
+        with cg1:
+            st.metric("Media (μ)",          f"{metricas['media']:.1f}")
+            st.metric("Zona oscura",        f"{metricas['zona_oscura']:.0%}")
+        with cg2:
+            st.metric("Desv. estándar (σ)", f"{metricas['std']:.1f}")
+            st.metric("Zona media",         f"{metricas['zona_media']:.0%}")
+        with cg3:
+            st.metric("Entropía",           f"{metricas['entropia']:.2f} bits")
+            st.metric("Zona clara",         f"{metricas['zona_clara']:.0%}")
+        with cg4:
+            st.metric("Rango dinámico",     f"{metricas['rango_din']} niveles")
+            sep = metricas["separacion_picos"]
+            st.metric(
+                "Separación de picos",
+                f"{sep:.0f} niveles",
+                delta="✅ Buena" if sep > 60 else "⚠️ Baja",
+            )
+
+        st.divider()
+
+        # Métricas del histograma RGB
+        st.markdown("**🎨 Métricas del histograma RGB**")
+        cr1, cr2, cr3, cr4 = st.columns(4)
+        with cr1:
+            st.metric("Canal dominante",   metricas["canal_dominante"])
+            st.metric("Media R",            f"{metricas['media_r']:.1f}")
+        with cr2:
+            st.metric("Tipo de agua",       metricas["tipo_agua"])
+            st.metric("Media G",            f"{metricas['media_g']:.1f}")
+        with cr3:
+            st.metric("Saturación media",   f"{metricas['saturacion_media']:.3f}")
+            st.metric("Media B",            f"{metricas['media_b']:.1f}")
+        with cr4:
+            st.metric("Balance RGB (σ)",    f"{metricas['balance_rgb']:.1f}")
+            st.metric("diff G-R",           f"{metricas['diff_gr']:+.1f}")
+
+        # Histograma RGB interactivo
+        st.divider()
+        st.markdown("**Histograma RGB de la imagen cargada**")
+        fig_rgb_diag = calcular_histograma(imagen_rgb)
+        st.plotly_chart(
+            fig_rgb_diag,
+            width="stretch",
+            key="chart_hist_rgb_diagnostico",
+        )
+
+        st.divider()
+
+        # Pipeline sugerido en 4 columnas
+        st.markdown("**🤖 Pipeline sugerido para esta escena:**")
+        cp1, cp2, cp3, cp4 = st.columns(4)
+
+        with cp1:
+            st.markdown("**🧩 Filtros**")
+            for i, f in enumerate(pipeline_sugerido["filtros"]):
+                params_f = ", ".join(
+                    f"{k}={v}" for k, v in f.items() if k != "tipo"
+                )
+                st.markdown(f"{i+1}. `{f['tipo']}`")
+                if params_f:
+                    st.caption(params_f)
+
+        with cp2:
+            st.markdown("**〰️ FFT**")
+            fft_c = pipeline_sugerido["fft"]
+            if fft_c["activo"]:
+                st.markdown(f"✅ `{fft_c['tipo']}`")
+                st.caption(f"cutoff = {fft_c['cutoff']}")
+            else:
+                st.markdown("⬜ Desactivada")
+
+        with cp3:
+            st.markdown("**✨ Mejoras**")
+            for i, m in enumerate(pipeline_sugerido["mejoras"]):
+                params_m = ", ".join(
+                    f"{k}={v}" for k, v in m.items() if k != "tipo"
+                )
+                st.markdown(f"{i+1}. `{m['tipo']}`")
+                if params_m:
+                    st.caption(params_m)
+
+        with cp4:
+            st.markdown("**🎯 Umbral**")
+            u = pipeline_sugerido["umbral"]
+            st.markdown(f"`{u['metodo']}`")
+            st.caption(
+                f"Invertir: {'✅ Sí' if u['invertir'] else '❌ No'}"
+            )
+
+        st.caption(f"**Razón:** {pipeline_sugerido['razon']}")
+
+    # ── Bloque de ejecución automática (solo en modo auto) ────────────────────
+    if st.session_state["modo_auto"]:
+        st.markdown("---")
+
+        col_btn, col_desc = st.columns([1, 3])
+        with col_btn:
+            ejecutar = st.button(
+                "▶ Ejecutar pipeline sugerido",
+                key="btn_ejecutar_auto",
+                type="primary",
+            )
+        with col_desc:
+            n_f = len(pipeline_sugerido["filtros"])
+            n_m = len(pipeline_sugerido["mejoras"])
+            fft_activa = pipeline_sugerido["fft"]["activo"]
+            st.info(
+                f"**{emoji_escena} {tipo_escena.replace('_',' ').title()}** — "
+                f"{n_f} filtro(s) · "
+                f"FFT {'✅' if fft_activa else '⬜'} · "
+                f"{n_m} mejora(s) · "
+                f"Umbral: {pipeline_sugerido['umbral']['metodo']}",
+                icon="🤖",
+            )
+
+        if ejecutar:
+            with st.spinner("🤖 Ejecutando pipeline sugerido…"):
+                resultado = ejecutar_pipeline_sugerido(
+                    imagen_gris, imagen_rgb, pipeline_sugerido
+                )
+
+            # Guardar resultados en session_state
+            imgs_f = resultado["imgs_filtros"]
+            st.session_state["img_filtrada"]   = (
+                resultado["img_post_fft"] if resultado["img_post_fft"] is not None
+                else imgs_f[-1] if imgs_f else imagen_gris
+            )
+            st.session_state["img_mejorada"]   = resultado["img_mejorada"]
+            st.session_state["img_binarizada"] = resultado["img_binarizada"]
+            st.session_state["resultado_auto"] = resultado
+            st.session_state["pipeline_ejecutado"] = True
+            st.toast("✅ Pipeline completado", icon="🤖")
+
+        # Mostrar resultados solo si ya se ejecutó
+        if st.session_state.get("pipeline_ejecutado") \
+                and "resultado_auto" in st.session_state:
+
+            res = st.session_state["resultado_auto"]
+            st.markdown("## 🤖 Resultado del Pipeline Automático")
+            st.success(
+                f"Escena **{tipo_escena.replace('_',' ')}** procesada. "
+                f"Método de umbralización: {pipeline_sugerido['umbral']['metodo']}. "
+                f"Máscara {'invertida' if pipeline_sugerido['umbral']['invertir'] else 'directa'}.",
+                icon="✅",
+            )
+
+            # 4 columnas: entrada → filtros → mejoras → binarizada
+            st.markdown("### Progresión del pipeline")
+            rc1, rc2, rc3, rc4 = st.columns(4)
+
+            with rc1:
+                st.markdown("**Entrada**")
+                st.image(imagen_gris, channels="GRAY",
+                         width="stretch", clamp=True)
+                st.caption(f"μ={metricas['media']:.1f}  σ={metricas['std']:.1f}")
+
+            with rc2:
+                img_post_f = res["imgs_filtros"][-1] if res["imgs_filtros"] \
+                             else imagen_gris
+                st.markdown("**Tras filtros**")
+                st.image(img_post_f, channels="GRAY",
+                         width="stretch", clamp=True)
+                st.caption(
+                    f"μ={np.mean(img_post_f):.1f}  "
+                    f"σ={np.std(img_post_f):.1f}"
+                )
+
+            with rc3:
+                st.markdown("**Tras mejoras**")
+                st.image(res["img_mejorada"], channels="GRAY",
+                         width="stretch", clamp=True)
+                st.caption(
+                    f"μ={np.mean(res['img_mejorada']):.1f}  "
+                    f"σ={np.std(res['img_mejorada']):.1f}"
+                )
+
+            with rc4:
+                st.markdown("**Máscara binaria**")
+                st.image(res["img_binarizada"], channels="GRAY",
+                         width="stretch", clamp=True)
+                px_obj = int((res["img_binarizada"] > 0).sum())
+                total  = res["img_binarizada"].size
+                st.caption(
+                    f"Objeto: {px_obj:,} px "
+                    f"({100*px_obj/total:.1f}%)"
+                )
+
+            # Histograma comparativo: grises originales vs binarizada
+            st.markdown("### 📊 Histograma: Grises originales vs Máscara binaria")
+            fig_comp = calcular_histograma_comparativo(
+                imagen_gris,
+                res["img_binarizada"],
+            )
+            st.plotly_chart(
+                fig_comp,
+                width="stretch",
+                key="chart_hist_auto_comp",
+            )
+            st.caption(
+                "🔴 Grises originales · 🔵 Máscara binarizada. "
+                "Un buen resultado muestra el histograma azul con "
+                "solo dos barras: una en 0 (fondo) y una en 255 (botella)."
+            )
+
+            # Detalle expandible de cada etapa
+            with st.expander("🔍 Detalle por etapa", expanded=False):
+
+                if res["imgs_filtros"]:
+                    st.markdown("**Filtros aplicados**")
+                    cols_f = st.columns(len(res["imgs_filtros"]))
+                    for i, (cfg, img_f) in enumerate(
+                        zip(pipeline_sugerido["filtros"], res["imgs_filtros"])
+                    ):
+                        with cols_f[i]:
+                            params_s = {k: v for k, v in cfg.items() if k != "tipo"}
+                            st.markdown(f"`{cfg['tipo']}`")
+                            st.caption(str(params_s) if params_s else "—")
+                            st.image(img_f, channels="GRAY",
+                                     width="stretch", clamp=True)
+                            fig_fi = calcular_histograma(img_f)
+                            fig_fi.update_layout(height=180)
+                            st.plotly_chart(
+                                fig_fi, width="stretch",
+                                key=f"chart_det_f_{i}",
+                            )
+
+                if res["img_post_fft"] is not None:
+                    st.markdown("**FFT aplicada**")
+                    cf1, cf2 = st.columns(2)
+                    with cf1:
+                        st.markdown("Espectro + máscara")
+                        esp_vis = crear_espectro_con_mascara(
+                            res["espectro_fft"], res["mascara_fft"]
+                        )
+                        st.image(esp_vis, channels="RGB",
+                                 width="stretch", clamp=True)
+                    with cf2:
+                        st.markdown("Imagen post-FFT")
+                        st.image(res["img_post_fft"], channels="GRAY",
+                                 width="stretch", clamp=True)
+
+                if res["imgs_mejoras"]:
+                    st.markdown("**Mejoras aplicadas**")
+                    cols_m = st.columns(len(res["imgs_mejoras"]))
+                    for i, (cfg, img_m) in enumerate(
+                        zip(pipeline_sugerido["mejoras"], res["imgs_mejoras"])
+                    ):
+                        with cols_m[i]:
+                            params_s = {k: v for k, v in cfg.items() if k != "tipo"}
+                            st.markdown(f"`{cfg['tipo']}`")
+                            st.caption(str(params_s) if params_s else "—")
+                            st.image(img_m, channels="GRAY",
+                                     width="stretch", clamp=True)
+                            fig_mi = calcular_histograma(img_m)
+                            fig_mi.update_layout(height=180)
+                            st.plotly_chart(
+                                fig_mi, width="stretch",
+                                key=f"chart_det_m_{i}",
+                            )
+
+            st.info(
+                "💡 **¿El resultado no es perfecto?** "
+                "Cambia a **Modo Manual** en la barra lateral. "
+                "El pipeline sugerido es el punto de partida óptimo "
+                "basado en el análisis del histograma RGB, pero cada "
+                "imagen es diferente.",
+                icon="💡",
+            )
 
     st.divider()
 
@@ -1746,30 +2111,53 @@ def main() -> None:
 
         with col_sim_metr:
             st.markdown("**Métricas de simetría**")
-            # Determinar si la simetría vertical supera el umbral configurado
+            # Índice principal: el mayor de los dos ejes tras normalización
+            simetria_principal = max(simetria_v, simetria_h)
+            delta_principal = "Alta ✅" if simetria_principal > umbral_simetria else "Baja ❌"
             delta_v = "Alta ✅" if simetria_v > umbral_simetria else "Baja ❌"
             delta_h = "Alta ✅" if simetria_h > umbral_simetria else "Baja ❌"
+            st.metric(
+                "Simetría Principal (max V/H)",
+                f"{simetria_principal:.3f}",
+                delta=delta_principal,
+                help="max(simetría vertical, simetría horizontal) tras normalizar la máscara."
+            )
             st.metric("Simetría Vertical",  f"{simetria_v:.3f}", delta=delta_v)
-            st.metric("Simetría Horizontal", f"{simetria_h:.3f}", delta=delta_h)
+            st.metric(
+                "Simetría Horizontal",
+                f"{simetria_h:.3f}",
+                delta=delta_h,
+                help="Simetría respecto al eje horizontal (flip vertical) tras normalización.",
+            )
             st.metric("Eje estimado", f"{theta:.1f}°")
             st.metric("Centroide", f"({cx:.0f}, {cy:.0f}) px")
 
         # ── Gráfico de barras comparativo (Plotly) ────────────────────────────
         import plotly.graph_objects as go
 
-        # Color de cada barra según si supera el umbral configurado
+        # Colores: verde si supera el umbral, rojo si no
+        simetria_principal_plot = max(simetria_v, simetria_h)
         color_v = "#10b981" if simetria_v >= umbral_simetria else "#ef4444"
         color_h = "#10b981" if simetria_h >= umbral_simetria else "#ef4444"
+        color_p = "#10b981" if simetria_principal_plot >= umbral_simetria else "#ef4444"
 
         fig_sim = go.Figure()
 
-        # Barras de los índices de simetría
+        # Barras de los índices de simetría (V, H y el máximo = principal)
         fig_sim.add_bar(
-            x=["Eje Vertical", "Eje Horizontal"],
-            y=[round(simetria_v, 4), round(simetria_h, 4)],
-            marker_color=[color_v, color_h],
+            x=["Eje Vertical", "Eje Horizontal", "Principal (max V/H)"],
+            y=[
+                round(simetria_v, 4),
+                round(simetria_h, 4),
+                round(simetria_principal_plot, 4),
+            ],
+            marker_color=[color_v, color_h, color_p],
             name="Índice IoU",
-            text=[f"{simetria_v:.3f}", f"{simetria_h:.3f}"],
+            text=[
+                f"{simetria_v:.3f}",
+                f"{simetria_h:.3f}",
+                f"{simetria_principal_plot:.3f}",
+            ],
             textposition="outside",
         )
 
