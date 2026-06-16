@@ -1,0 +1,36 @@
+{
+  "botella_roja.jpg": {
+    "modo_auto": true,
+    "historial_filtros": [],
+    "fft": {
+      "activo": false,
+      "tipo": "lowpass",
+      "cutoff": 0.15
+    },
+    "historial_mejoras": [],
+    "segmentacion": {
+      "metodo": "Otsu",
+      "umbral_manual": 127,
+      "banda_t1": 80,
+      "banda_t2": 200,
+      "invertir": false,
+      "cierre": true,
+      "kcierre": 7,
+      "apertura": false,
+      "kapertura": 3,
+      "relleno": false
+    },
+    "extraccion": {
+      "conectividad": 8,
+      "seleccion": "Automático (mayor área)",
+      "idx_ccl": 1,
+      "grosor_contorno": 2
+    },
+    "simetria": {
+      "eje": "vertical",
+      "umbral": 0.7
+    },
+    "nombre_imagen": "botella_roja.jpg",
+    "timestamp": "2026-06-15 22:33:40"
+  }
+}

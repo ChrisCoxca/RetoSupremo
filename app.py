@@ -11,9 +11,13 @@
 
 import numpy as np
 import cv2
+import pandas  # importar antes de plotly para evitar circular import en Python 3.14
 import streamlit as st
 import sys
+import os
+import json
 import importlib
+from datetime import datetime
 import procesamiento
 
 # Forzar la recarga de procesamiento para evitar problemas de caché en Streamlit Cloud
@@ -165,6 +169,179 @@ if "objetos_ignorados" not in st.session_state:
 if "galeria_pagina" not in st.session_state:
     st.session_state["galeria_pagina"] = 0
 
+# Presets de pipeline guardados — se cargan de JSON al inicio
+if "pipelines_guardados" not in st.session_state:
+    st.session_state["pipelines_guardados"] = {}  # se llena abajo con la función de carga
+
+# Nombre de precarga pendiente de aplicar (flujo sidebar → main)
+if "precarga_pendiente" not in st.session_state:
+    st.session_state["precarga_pendiente"] = None
+
+
+
+# =============================================================================
+# 2b. FUNCIONES AUXILIARES — Precargas de Pipeline
+#     Definidas aquí (antes del sidebar) porque el sidebar las invoca
+#     al nivel del módulo.
+# =============================================================================
+_RUTA_PRESETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pipelines_guardados.json")
+_RUTA_IMAGENES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "imagenes")
+
+
+def cargar_presets_de_json() -> dict:
+    """
+    Lee el archivo pipelines_guardados.json y devuelve el dict de presets.
+    Si el archivo no existe o tiene formato inválido, devuelve {}.
+    """
+    if not os.path.isfile(_RUTA_PRESETS):
+        return {}
+    try:
+        with open(_RUTA_PRESETS, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def guardar_presets_a_json(presets: dict) -> None:
+    """
+    Serializa el dict de presets a pipelines_guardados.json.
+    """
+    with open(_RUTA_PRESETS, "w", encoding="utf-8") as f:
+        json.dump(presets, f, ensure_ascii=False, indent=2)
+
+
+def extraer_config_pipeline() -> dict:
+    """
+    Lee el session_state actual y devuelve un dict con toda la configuración
+    del pipeline que puede ser serializado a JSON.
+    """
+    return {
+        # Modo de operación
+        "modo_auto": st.session_state.get("modo_auto", True),
+        # Fase 3 — Filtros espaciales
+        "historial_filtros": list(st.session_state.get("historial_filtros", [])),
+        # Fase 3.5 — FFT
+        "fft": {
+            "activo": st.session_state.get("chk_fft_activo", False),
+            "tipo":   st.session_state.get("radio_fft_tipo", "lowpass"),
+            "cutoff": st.session_state.get("slider_fft_cutoff", 0.15),
+        },
+        # Fase 4 — Mejoras
+        "historial_mejoras": list(st.session_state.get("historial_mejoras", [])),
+        # Fase 5 — Segmentación
+        "segmentacion": {
+            "metodo":        st.session_state.get("sel_metodo_umbral", "Otsu"),
+            "umbral_manual": st.session_state.get("slider_umbral_manual", 127),
+            "banda_t1":      st.session_state.get("slider_banda_t1", 80),
+            "banda_t2":      st.session_state.get("slider_banda_t2", 200),
+            "invertir":      st.session_state.get("chk_invertir", False),
+            "cierre":        st.session_state.get("chk_cierre", True),
+            "kcierre":       st.session_state.get("slider_kcierre", 7),
+            "apertura":      st.session_state.get("chk_apertura", False),
+            "kapertura":     st.session_state.get("slider_kapertura", 3),
+            "relleno":       st.session_state.get("chk_relleno", False),
+        },
+        # Fase 6 — Extracción
+        "extraccion": {
+            "conectividad":     st.session_state.get("radio_ccl_con", 8),
+            "seleccion":        st.session_state.get("radio_sel_ccl", "Automático (mayor área)"),
+            "idx_ccl":          st.session_state.get("num_idx_ccl", 1),
+            "grosor_contorno":  st.session_state.get("slider_grosor_contorno", 2),
+        },
+        # Fase 7 — Simetría
+        "simetria": {
+            "eje":    st.session_state.get("radio_eje_simetria", "vertical"),
+            "umbral": st.session_state.get("slider_umbral_simetria", 0.70),
+        },
+    }
+
+
+def aplicar_config_pipeline(config: dict) -> None:
+    """
+    Recibe un dict de configuración y sobreescribe los valores
+    correspondientes del session_state de Streamlit.
+    """
+    # Modo de operación
+    st.session_state["modo_auto"] = config.get("modo_auto", True)
+
+    # Fase 3 — Filtros
+    st.session_state["historial_filtros"] = list(config.get("historial_filtros", []))
+
+    # Fase 3.5 — FFT
+    fft_cfg = config.get("fft", {})
+    st.session_state["chk_fft_activo"]    = fft_cfg.get("activo", False)
+    st.session_state["radio_fft_tipo"]    = fft_cfg.get("tipo", "lowpass")
+    st.session_state["slider_fft_cutoff"] = fft_cfg.get("cutoff", 0.15)
+
+    # Fase 4 — Mejoras
+    st.session_state["historial_mejoras"] = list(config.get("historial_mejoras", []))
+
+    # Fase 5 — Segmentación
+    seg = config.get("segmentacion", {})
+    st.session_state["sel_metodo_umbral"]    = seg.get("metodo", "Otsu")
+    st.session_state["slider_umbral_manual"] = seg.get("umbral_manual", 127)
+    st.session_state["slider_banda_t1"]      = seg.get("banda_t1", 80)
+    st.session_state["slider_banda_t2"]      = seg.get("banda_t2", 200)
+    st.session_state["chk_invertir"]         = seg.get("invertir", False)
+    st.session_state["chk_cierre"]           = seg.get("cierre", True)
+    st.session_state["slider_kcierre"]       = seg.get("kcierre", 7)
+    st.session_state["chk_apertura"]         = seg.get("apertura", False)
+    st.session_state["slider_kapertura"]     = seg.get("kapertura", 3)
+    st.session_state["chk_relleno"]          = seg.get("relleno", False)
+
+    # Fase 6 — Extracción
+    ext = config.get("extraccion", {})
+    st.session_state["radio_ccl_con"]          = ext.get("conectividad", 8)
+    st.session_state["radio_sel_ccl"]          = ext.get("seleccion", "Automático (mayor área)")
+    st.session_state["num_idx_ccl"]            = ext.get("idx_ccl", 1)
+    st.session_state["slider_grosor_contorno"] = ext.get("grosor_contorno", 2)
+
+    # Fase 7 — Simetría
+    sim = config.get("simetria", {})
+    st.session_state["radio_eje_simetria"]    = sim.get("eje", "vertical")
+    st.session_state["slider_umbral_simetria"] = sim.get("umbral", 0.70)
+
+    # Resetear estado de pipeline ejecutado para forzar re-ejecución
+    st.session_state["pipeline_ejecutado"] = False
+    st.session_state["objetos_ignorados"]  = set()
+    st.session_state["galeria_pagina"]     = 0
+
+
+# =============================================================================
+# 2c. PROCESAR PRECARGA PENDIENTE (antes del sidebar)
+#     Se ejecuta ANTES de que se rendericen los widgets del sidebar,
+#     para que los valores del session_state se actualicen a tiempo.
+# =============================================================================
+_precarga_nombre = st.session_state.get("precarga_pendiente")
+if _precarga_nombre is not None:
+    st.session_state["precarga_pendiente"] = None  # limpiar para no repetir
+
+    _presets_pre = cargar_presets_de_json()
+    _config_pre = _presets_pre.get(_precarga_nombre)
+
+    if _config_pre is not None:
+        ruta_img_pre = os.path.join(_RUTA_IMAGENES, _precarga_nombre)
+        if os.path.isfile(ruta_img_pre):
+            # 1. Aplicar config al session_state ANTES de que los widgets se creen
+            aplicar_config_pipeline(_config_pre)
+
+            # 2. Cargar la imagen y guardar en session_state
+            with open(ruta_img_pre, "rb") as _f_img:
+                _bytes_pre = _f_img.read()
+            st.session_state["precarga_imagen_bytes"] = _bytes_pre
+            st.session_state["precarga_nombre"]       = _precarga_nombre
+            st.session_state["_precarga_toast"]        = _precarga_nombre
+        else:
+            st.session_state["_precarga_error"] = (
+                f"❌ No se encontró la imagen '{_precarga_nombre}' "
+                f"en la carpeta `imagenes/`. Asegúrate de que el archivo "
+                f"exista en: `{ruta_img_pre}`"
+            )
+    else:
+        st.session_state["_precarga_error"] = (
+            f"❌ No se encontró la precarga para '{_precarga_nombre}'. "
+            "Pudo haber sido eliminada."
+        )
 
 
 # =============================================================================
@@ -795,6 +972,51 @@ with st.sidebar:
         f"7. 🪞 Simetría: _activa_"
     )
 
+    st.divider()
+
+    # =========================================================================
+    # § 8 — Precargas guardadas de pipeline
+    # =========================================================================
+    st.markdown("#### 💾 Precargas Guardadas")
+
+    # Cargar presets desde JSON al renderizar el sidebar
+    presets = cargar_presets_de_json()
+    st.session_state["pipelines_guardados"] = presets
+
+    if presets:
+        for nombre_preset, config_preset in presets.items():
+            col_preset_btn, col_preset_del = st.columns([4, 1])
+            with col_preset_btn:
+                timestamp_str = config_preset.get("timestamp", "")
+                if st.button(
+                    f"📦 Precarga para {nombre_preset}",
+                    key=f"btn_preset_{nombre_preset}",
+                    help=(
+                        f"Carga la imagen '{nombre_preset}' desde la carpeta "
+                        f"imagenes/ y restaura la configuración guardada."
+                        + (f"\n🕐 Guardado: {timestamp_str}" if timestamp_str else "")
+                    ),
+                ):
+                    st.session_state["precarga_pendiente"] = nombre_preset
+                    st.rerun()
+            with col_preset_del:
+                if st.button(
+                    "🗑️",
+                    key=f"btn_del_preset_{nombre_preset}",
+                    help=f"Eliminar la precarga para '{nombre_preset}'",
+                ):
+                    presets_act = cargar_presets_de_json()
+                    presets_act.pop(nombre_preset, None)
+                    guardar_presets_a_json(presets_act)
+                    st.session_state["pipelines_guardados"] = presets_act
+                    st.toast(f"Precarga para '{nombre_preset}' eliminada.", icon="🗑️")
+                    st.rerun()
+    else:
+        st.caption(
+            "Sin precargas guardadas. Procesa una imagen y presiona "
+            "'Guardar precarga' al final del pipeline."
+        )
+
 
 # =============================================================================
 # 4. FUNCIÓN AUXILIAR: mostrar_paso_ui
@@ -964,6 +1186,7 @@ def aplicar_mejora_cacheada(
     return aplicar_mejora(imagen_gris, config)
 
 
+
 # =============================================================================
 # 7. FLUJO PRINCIPAL — función main()
 # =============================================================================
@@ -981,8 +1204,18 @@ def main() -> None:
         "Sube una imagen desde la barra lateral para comenzar."
     )
 
+    # ── Mostrar mensajes de precarga (procesada antes del sidebar) ──────────
+    _precarga_error_msg = st.session_state.pop("_precarga_error", None)
+    if _precarga_error_msg is not None:
+        st.error(_precarga_error_msg, icon="❌")
+    _toast_nombre = st.session_state.pop("_precarga_toast", None)
+    if _toast_nombre is not None:
+        st.toast(f"✅ Precarga para '{_toast_nombre}' aplicada.", icon="📦")
+
     # ── Sin imagen cargada: mostrar instrucciones ─────────────────────────────
-    if archivo is None:
+    # Verificar si hay imagen subida por el usuario O cargada por precarga
+    tiene_precarga = st.session_state.get("precarga_imagen_bytes") is not None
+    if archivo is None and not tiene_precarga:
         st.info(
             "👈 **Empieza subiendo una imagen** desde la barra lateral.\n\n"
             "**Consejos para mejores resultados:**\n"
@@ -995,8 +1228,24 @@ def main() -> None:
         return
 
     # ── Cargar y preprocesar ──────────────────────────────────────────────────
-    try:
+    # Determinar la fuente de la imagen: archivo subido o precarga
+    if archivo is not None:
         bytes_imagen = archivo.read()
+        nombre_imagen_actual = archivo.name
+        # Limpiar precarga si se subió un archivo nuevo
+        st.session_state.pop("precarga_imagen_bytes", None)
+        st.session_state.pop("precarga_nombre", None)
+    elif st.session_state.get("precarga_imagen_bytes") is not None:
+        bytes_imagen = st.session_state["precarga_imagen_bytes"]
+        nombre_imagen_actual = st.session_state.get("precarga_nombre", "precarga.jpg")
+    else:
+        st.error("❌ No hay imagen disponible para procesar.")
+        return
+
+    # Guardar nombre de la imagen actual para el botón de guardar preset
+    st.session_state["nombre_imagen_actual"] = nombre_imagen_actual
+
+    try:
         imagen_rgb, imagen_gris = cargar_y_preprocesar(bytes_imagen)
     except ValueError as e:
         st.error(f"❌ Error al procesar la imagen: {e}")
@@ -2534,6 +2783,71 @@ def main() -> None:
                 f"✅ Textura del fondo analizada · Clasificación: **{etiq}**",
                 icon="🌊",
             )
+
+    # =========================================================================
+    # § GUARDAR PRECARGA — Botón al final del pipeline
+    # =========================================================================
+    st.divider()
+    nombre_img_guardar = st.session_state.get("nombre_imagen_actual")
+    tiene_binarizada   = st.session_state.get("img_binarizada") is not None
+
+    if nombre_img_guardar and tiene_binarizada:
+        st.markdown("## 💾 Guardar Precarga")
+        st.caption(
+            "Guarda la configuración completa del pipeline actual asociada a "
+            "esta imagen. Podrás restaurarla desde la barra lateral."
+        )
+
+        # Verificar si la imagen existe en imagenes/
+        ruta_img_check = os.path.join(_RUTA_IMAGENES, nombre_img_guardar)
+        imagen_en_carpeta = os.path.isfile(ruta_img_check)
+
+        if not imagen_en_carpeta:
+            st.warning(
+                f"⚠️ La imagen **{nombre_img_guardar}** no está en la carpeta "
+                f"`imagenes/`. Para que la precarga funcione al cargar, copia la "
+                f"imagen a: `{_RUTA_IMAGENES}/`",
+                icon="⚠️",
+            )
+
+        col_guardar, col_info_guardar = st.columns([1, 3])
+        with col_guardar:
+            if st.button(
+                f"💾 Guardar precarga para {nombre_img_guardar}",
+                key="btn_guardar_preset",
+                type="primary",
+            ):
+                config_actual = extraer_config_pipeline()
+                config_actual["nombre_imagen"] = nombre_img_guardar
+                config_actual["timestamp"]     = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                presets_actuales = cargar_presets_de_json()
+                presets_actuales[nombre_img_guardar] = config_actual
+                guardar_presets_a_json(presets_actuales)
+                st.session_state["pipelines_guardados"] = presets_actuales
+
+                st.toast(
+                    f"✅ Precarga para '{nombre_img_guardar}' guardada exitosamente.",
+                    icon="💾",
+                )
+                st.rerun()
+
+        with col_info_guardar:
+            presets_existentes = cargar_presets_de_json()
+            if nombre_img_guardar in presets_existentes:
+                ts_existente = presets_existentes[nombre_img_guardar].get("timestamp", "")
+                st.info(
+                    f"📦 Ya existe una precarga para esta imagen "
+                    f"(guardada: {ts_existente}). "
+                    f"Al guardar de nuevo se **sobreescribirá**.",
+                    icon="📦",
+                )
+            else:
+                st.info(
+                    "Esto guardará: filtros, FFT, mejoras, segmentación, "
+                    "extracción y simetría.",
+                    icon="💡",
+                )
 
 
 # =============================================================================
