@@ -67,6 +67,8 @@ from procesamiento import (
     # Análisis multi-objeto
     analizar_multiples_objetos,
     dibujar_todos_contornos,
+    # Análisis de textura con FFT
+    analizar_textura_fft,
 )
 
 
@@ -154,6 +156,15 @@ if "modo_auto" not in st.session_state:
 # Indica si el pipeline automático ya fue ejecutado en la sesión actual
 if "pipeline_ejecutado" not in st.session_state:
     st.session_state["pipeline_ejecutado"] = False
+
+# Set de índices de objetos ignorados en la galería multi-objeto
+if "objetos_ignorados" not in st.session_state:
+    st.session_state["objetos_ignorados"] = set()
+
+# Página actual de la galería (paginación, 8 objetos por página)
+if "galeria_pagina" not in st.session_state:
+    st.session_state["galeria_pagina"] = 0
+
 
 
 # =============================================================================
@@ -2244,30 +2255,51 @@ def main() -> None:
             st.warning("⚠️ Ejecuta la Fase 5 (segmentación) primero.")
         else:
             with st.spinner("🔍 Analizando todos los objetos…"):
-                resultados_mo = analizar_multiples_objetos(
+                resultados_mo_todos = analizar_multiples_objetos(
                     mascara_mo,
                     conectividad=st.session_state.get("radio_ccl_con", 8),
                     min_area=min_area_mo,
                 )
 
+            # ── Filtrar objetos ignorados ──────────────────────────────────
+            ignorados = st.session_state.get("objetos_ignorados", set())
+            resultados_mo = [
+                r for r in resultados_mo_todos
+                if r["idx"] not in ignorados
+            ]
+
+            n_total_todos = len(resultados_mo_todos)
             n_total    = len(resultados_mo)
             n_probable = sum(1 for r in resultados_mo if r["tipo"] == "success")
             n_posible  = sum(1 for r in resultados_mo if r["tipo"] == "warning")
             n_no       = sum(1 for r in resultados_mo if r["tipo"] == "error")
 
-            cm1, cm2, cm3, cm4 = st.columns(4)
-            cm1.metric("Objetos detectados",     n_total)
-            cm2.metric("✅ Probable Botella PET", n_probable)
-            cm3.metric("⚠️ Posible botella",      n_posible)
-            cm4.metric("❌ No es botella",         n_no)
+            # Fila de métricas + botón restaurar
+            cm_row = st.columns([1, 1, 1, 1, 1])
+            cm_row[0].metric("Objetos detectados",     n_total_todos)
+            cm_row[1].metric("✅ Probable Botella PET", n_probable)
+            cm_row[2].metric("⚠️ Posible botella",      n_posible)
+            cm_row[3].metric("❌ No es botella",         n_no)
+            with cm_row[4]:
+                if len(ignorados) > 0:
+                    st.metric("🙈 Ignorados", len(ignorados))
+                    if st.button(
+                        "♻️ Restaurar todos",
+                        key="btn_restaurar_ignorados",
+                        help="Vuelve a mostrar todos los objetos ignorados",
+                    ):
+                        st.session_state["objetos_ignorados"] = set()
+                        st.session_state["galeria_pagina"] = 0
+                        st.rerun()
 
-            if n_total == 0:
+            if n_total_todos == 0:
                 st.warning(
                     "No se encontraron objetos con esa área mínima. "
                     "Prueba reducir el slider.",
                     icon="⚠️",
                 )
             else:
+                # ── Imagen con todos los contornos visibles (no ignorados) ──
                 st.markdown("### Imagen con todos los objetos detectados")
                 img_contornos = dibujar_todos_contornos(imagen_rgb, resultados_mo)
                 st.image(img_contornos, channels="RGB", width="stretch", clamp=True)
@@ -2276,53 +2308,232 @@ def main() -> None:
                     "del componente en la tabla de abajo."
                 )
 
+                # ── Tabla de objetos detectados ────────────────────────────
                 st.markdown("### 📋 Tabla de objetos detectados")
                 import pandas as pd
                 tabla = pd.DataFrame([
                     {
-                        "Obj.":         r["idx"],
-                        "Área (px²)":  r["area"],
-                        "Elongación":  r["elongacion"],
-                        "Sim. V":       r["simetria_v"],
-                        "Sim. H":       r["simetria_h"],
-                        "Sim. Princ.":  r["simetria_principal"],
-                        "Eje (°)":     r["theta"],
-                        "Centroide":    str(r["centroide"]),
+                        "Obj.":          r["idx"],
+                        "Área (px²)":   r["area"],
+                        "Elongación":   r["elongacion"],
+                        "Sim. V":        r["simetria_v"],
+                        "Sim. H":        r["simetria_h"],
+                        "Sim. Princ.":   r["simetria_principal"],
+                        "Eje (°)":      r["theta"],
+                        "Centroide":     str(r["centroide"]),
                         "Clasificación": r["etiqueta"],
                     }
                     for r in resultados_mo
                 ])
                 st.dataframe(tabla, use_container_width=True, hide_index=True, key="df_multiobj")
 
-                if 1 <= n_total <= 8:
-                    st.markdown("### 🖼️ Galería de objetos detectados")
-                    n_cols = min(n_total, 4)
-                    cols_g = st.columns(n_cols)
-                    for gi, r in enumerate(resultados_mo):
-                        with cols_g[gi % n_cols]:
-                            border_color = (
-                                "#22c55e" if r["tipo"] == "success"
-                                else "#f97316" if r["tipo"] == "warning"
-                                else "#ef4444"
-                            )
-                            x, y, w_b, h_b = r["bbox"]
-                            pad = 10
-                            H_img, W_img = imagen_rgb.shape[:2]
-                            x1 = max(0, x - pad)
-                            y1 = max(0, y - pad)
-                            x2 = min(W_img, x + w_b + pad)
-                            y2 = min(H_img, y + h_b + pad)
-                            recorte = imagen_rgb[y1:y2, x1:x2]
-                            st.image(recorte, channels="RGB", width="stretch", clamp=True)
-                            # Etiqueta simplificada para la galería
-                            icono = "✅" if r["tipo"] == "success" else "⚠️" if r["tipo"] == "warning" else "❌"
-                            st.markdown(
-                                f'<div style="text-align: center; margin-top: 5px;">'
-                                f'<span style="background-color:{border_color}; color:white; padding: 2px 8px; border-radius: 12px; font-weight: bold; font-size: 0.9em;">'
-                                f'{icono} Obj. {r["idx"]}</span>'
-                                '</div>',
-                                unsafe_allow_html=True,
-                            )
+                # ── Galería con paginación (siempre visible) ───────────────
+                st.markdown("### 🖼️ Galería de objetos detectados")
+
+                ITEMS_POR_PAGINA = 8
+                n_paginas = max(1, (n_total + ITEMS_POR_PAGINA - 1) // ITEMS_POR_PAGINA)
+                pagina_actual = int(st.session_state.get("galeria_pagina", 0))
+                # Clamp por si el número de objetos cambió
+                pagina_actual = min(pagina_actual, n_paginas - 1)
+                st.session_state["galeria_pagina"] = pagina_actual
+
+                # Controles de paginación (solo si hay más de una página)
+                if n_paginas > 1:
+                    pag_c1, pag_c2, pag_c3 = st.columns([1, 4, 1])
+                    with pag_c1:
+                        if st.button(
+                            "◀ Anterior",
+                            key="btn_pag_anterior",
+                            disabled=(pagina_actual == 0),
+                        ):
+                            st.session_state["galeria_pagina"] = pagina_actual - 1
+                            st.rerun()
+                    with pag_c2:
+                        st.markdown(
+                            f'<p style="text-align:center; margin-top:6px; color:#94a3b8;">'
+                            f'Página {pagina_actual + 1} de {n_paginas} '
+                            f'· {n_total} objeto(s) visible(s)</p>',
+                            unsafe_allow_html=True,
+                        )
+                    with pag_c3:
+                        if st.button(
+                            "Siguiente ▶",
+                            key="btn_pag_siguiente",
+                            disabled=(pagina_actual == n_paginas - 1),
+                        ):
+                            st.session_state["galeria_pagina"] = pagina_actual + 1
+                            st.rerun()
+                else:
+                    st.caption(
+                        f"Mostrando {n_total} objeto(s) · "
+                        "Usa el botón 🗑️ Ignorar para ocultar falsos positivos."
+                    )
+
+                # Recortes de la página actual
+                inicio = pagina_actual * ITEMS_POR_PAGINA
+                fin    = min(inicio + ITEMS_POR_PAGINA, n_total)
+                pagina_resultados = resultados_mo[inicio:fin]
+
+                N_COLS_GALERIA = 4
+                cols_g = st.columns(N_COLS_GALERIA)
+
+                for gi, r in enumerate(pagina_resultados):
+                    col_idx = gi % N_COLS_GALERIA
+                    with cols_g[col_idx]:
+                        border_color = (
+                            "#22c55e" if r["tipo"] == "success"
+                            else "#f97316" if r["tipo"] == "warning"
+                            else "#ef4444"
+                        )
+                        x, y, w_b, h_b = r["bbox"]
+                        pad = 10
+                        H_img, W_img = imagen_rgb.shape[:2]
+                        x1 = max(0, x - pad)
+                        y1 = max(0, y - pad)
+                        x2 = min(W_img, x + w_b + pad)
+                        y2 = min(H_img, y + h_b + pad)
+                        recorte = imagen_rgb[y1:y2, x1:x2]
+                        st.image(recorte, channels="RGB", width="stretch", clamp=True)
+
+                        # Badge de clasificación
+                        icono = (
+                            "✅" if r["tipo"] == "success"
+                            else "⚠️" if r["tipo"] == "warning"
+                            else "❌"
+                        )
+                        st.markdown(
+                            f'<div style="text-align:center; margin-top:4px;">'
+                            f'<span style="background-color:{border_color}; color:white; '
+                            f'padding:2px 8px; border-radius:12px; font-weight:bold; '
+                            f'font-size:0.85em;">{icono} Obj.&nbsp;{r["idx"]}</span>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                        # Botón Ignorar individual
+                        if st.button(
+                            "🗑️ Ignorar",
+                            key=f"btn_ignorar_{r['idx']}",
+                            help=(
+                                f"Ocultar el objeto #{r['idx']} de la galería, "
+                                "tabla e imagen de contornos."
+                            ),
+                        ):
+                            st.session_state["objetos_ignorados"].add(r["idx"])
+                            # Ajustar página si se vaciara la actual
+                            nueva_n = n_total - 1
+                            nueva_n_pags = max(1, (nueva_n + ITEMS_POR_PAGINA - 1) // ITEMS_POR_PAGINA)
+                            if pagina_actual >= nueva_n_pags:
+                                st.session_state["galeria_pagina"] = max(0, nueva_n_pags - 1)
+                            st.rerun()
+
+        # ─────────────────────────────────────────────────────────────────
+        # Paso 9 · Análisis de Textura del Fondo con FFT
+        # ─────────────────────────────────────────────────────────────────
+        st.divider()
+        st.markdown("## 🌊 Paso 9 · Análisis de Textura del Fondo (FFT)")
+        st.caption(
+            "Clasifica el tipo de fondo de la imagen (agua, pantano, tierra, etc.) "
+            "extrayendo descriptores del espectro de la **Transformada de Fourier 2D**. "
+            "Opera sobre la imagen original en escala de grises."
+        )
+
+        img_gris_textura = st.session_state.get("img_gris")
+        if img_gris_textura is None:
+            st.warning("⚠️ Carga una imagen para ejecutar el análisis de textura.", icon="⚠️")
+        else:
+            with st.spinner("🌀 Calculando espectro FFT y descriptores de textura…"):
+                resultado_textura = analizar_textura_fft(img_gris_textura)
+
+            desc  = resultado_textura["descriptores"]
+            clas  = resultado_textura["clasificacion"]
+            etiq  = resultado_textura["etiqueta"]
+            descr = resultado_textura["descripcion"]
+            esp_rgb = resultado_textura["espectro_rgb"]
+            fig_b   = resultado_textura["fig_bandas"]
+
+            # ── Banner de clasificación ────────────────────────────────────
+            colores_clas = {
+                "agua_limpia":        ("#0ea5e9", "#0c4a6e"),
+                "agua_con_ondas":     ("#06b6d4", "#164e63"),
+                "pantano_vegetacion": ("#22c55e", "#14532d"),
+                "tierra_sedimento":   ("#a16207", "#422006"),
+                "fondo_mixto":        ("#7c3aed", "#2e1065"),
+            }
+            color_fg, color_bg = colores_clas.get(clas, ("#64748b", "#1e293b"))
+            st.markdown(
+                f'<div style="'
+                f'background:linear-gradient(135deg, {color_bg} 0%, {color_fg}33 100%); '
+                f'border:1.5px solid {color_fg}; border-radius:12px; '
+                f'padding:1rem 1.4rem; margin-bottom:1rem;">'
+                f'<span style="font-size:1.4em; font-weight:700; color:{color_fg};">'
+                f'{etiq}</span><br>'
+                f'<span style="color:#cbd5e1; font-size:0.92em;">{descr}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+            # ── Tres columnas: espectro | barras de energía | descriptores ─
+            col_esp, col_bar, col_met = st.columns([1, 1, 1])
+
+            with col_esp:
+                st.markdown("**Espectro de magnitud (FFT)**")
+                st.image(
+                    esp_rgb,
+                    width="stretch",
+                    clamp=True,
+                    channels="RGB",
+                )
+                st.caption(
+                    "Centro = componente DC (frecuencia 0). "
+                    "Más brillante = mayor energía. "
+                    "Colormap: azul→rojo (Inferno)."
+                )
+
+            with col_bar:
+                st.markdown("**Energía por banda de frecuencia**")
+                st.plotly_chart(
+                    fig_b,
+                    width="stretch",
+                    key="chart_textura_bandas",
+                )
+
+            with col_met:
+                st.markdown("**Descriptores espectrales**")
+                st.metric(
+                    "Energía baja freq.",
+                    f"{desc['energia_baja']*100:.1f}%",
+                    help="Radio < 10 % del semieje mínimo. Indica uniformidad / suavidad.",
+                )
+                st.metric(
+                    "Energía media freq.",
+                    f"{desc['energia_media']*100:.1f}%",
+                    help="Banda 10–40 %. Indica textura media (sedimentos, ondas, algas).",
+                )
+                st.metric(
+                    "Energía alta freq.",
+                    f"{desc['energia_alta']*100:.1f}%",
+                    help="Radio > 40 %. Bordes nítidos, ruido, objetos pequeños.",
+                )
+                st.metric(
+                    "Entropía espectral",
+                    f"{desc['entropia_esp']:.2f} bits",
+                    help="Alta entropía = textura caótica (vegetación, basura múltiple).",
+                )
+                st.metric(
+                    "Anisotropía",
+                    f"{desc['anisotropia']:.3f}",
+                    help="Cercano a 1 = patrón muy direccional (corrientes, olas).",
+                )
+                st.metric(
+                    "Concentración",
+                    f"{desc['concentracion']*100:.1f}%",
+                    help="Fracción de energía en el top-5 % de componentes espectrales.",
+                )
+
+            st.success(
+                f"✅ Textura del fondo analizada · Clasificación: **{etiq}**",
+                icon="🌊",
+            )
 
 
 # =============================================================================

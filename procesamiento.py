@@ -2646,3 +2646,211 @@ def dibujar_todos_contornos(imagen_rgb, resultados):
         )
 
     return img_out
+
+
+# =============================================================================
+# ANÁLISIS DE TEXTURA DEL FONDO — Transformada de Fourier 2D
+# =============================================================================
+
+def analizar_textura_fft(imagen_gris: np.ndarray) -> dict:
+    """Analiza la textura del fondo mediante descriptores del espectro de Fourier.
+
+    Aplica la DFT 2D a la imagen en grises y extrae descriptores de frecuencia
+    para clasificar el tipo de fondo: agua limpia, agua con ondas, pantano,
+    tierra/sedimento o fondo mixto.
+
+    Descriptores calculados
+    -----------------------
+    energia_baja  : float [0,1]  — fracción de energía en el anillo de bajas
+                                   frecuencias (radio < 10 % del semiancho).
+    energia_media : float [0,1]  — fracción en la banda media (10 %–40 %).
+    energia_alta  : float [0,1]  — fracción en la banda alta (> 40 %).
+    entropia_esp  : float        — entropía de Shannon del espectro normalizado.
+                                   Alta entropía = textura caótica / orgánica.
+    anisotropia   : float [0,1]  — |E_horiz − E_vert| / (E_horiz + E_vert).
+                                   Cerca de 1 → patrón muy direccional (ondas).
+    concentracion : float [0,1]  — fracción de energía en los 5 % de píxeles
+                                   con mayor magnitud espectral.
+
+    Clasificación del fondo
+    -----------------------
+    agua_limpia       : energía muy concentrada en bajas freq, baja entropía.
+    agua_con_ondas    : anisotropía alta + energía media notable.
+    pantano_vegetacion: entropía alta + energía distribuida en medias/altas.
+    tierra_sedimento  : energía media alta, entropía moderada.
+    fondo_mixto       : no encaja claramente en ninguna categoría.
+
+    Parameters
+    ----------
+    imagen_gris : np.ndarray 2D uint8
+        Imagen en escala de grises.
+
+    Returns
+    -------
+    dict con claves:
+        descriptores : dict — los 6 descriptores numéricos.
+        clasificacion: str  — nombre de la categoría (snake_case).
+        etiqueta     : str  — texto con emoji para mostrar en UI.
+        descripcion  : str  — explicación breve de la categoría.
+        espectro_rgb : np.ndarray 3D uint8 — espectro de magnitud en RGB
+                       (para visualización, canal DC al centro).
+        fig_bandas   : go.Figure — gráfico de barras de energía por banda.
+    """
+    H, W = imagen_gris.shape
+
+    # ── 1. DFT 2D y desplazamiento del centro ─────────────────────────────────
+    F = np.fft.fft2(imagen_gris.astype(np.float64))
+    F_shifted = np.fft.fftshift(F)
+    magnitud = np.abs(F_shifted)
+
+    # ── 2. Espectro de magnitud logarítmico (para visualización) ──────────────
+    espectro_log = np.log1p(magnitud)
+    espectro_min, espectro_max = espectro_log.min(), espectro_log.max()
+    if espectro_max > espectro_min:
+        espectro_norm_vis = (espectro_log - espectro_min) / (espectro_max - espectro_min)
+    else:
+        espectro_norm_vis = np.zeros_like(espectro_log)
+    espectro_u8 = (espectro_norm_vis * 255).astype(np.uint8)
+
+    # Convertir a RGB con colormap "caliente" (azul→amarillo→rojo)
+    espectro_rgb = cv2.applyColorMap(espectro_u8, cv2.COLORMAP_INFERNO)
+    espectro_rgb = cv2.cvtColor(espectro_rgb, cv2.COLOR_BGR2RGB)
+
+    # ── 3. Máscara de anillos de frecuencia ───────────────────────────────────
+    cy_c, cx_c = H // 2, W // 2
+    radio_max = min(H, W) / 2.0
+
+    ys = np.arange(H) - cy_c
+    xs = np.arange(W) - cx_c
+    XX, YY = np.meshgrid(xs, ys)
+    distancia = np.sqrt(XX**2 + YY**2)
+    distancia_norm = distancia / radio_max  # normalizar a [0, 1+]
+
+    # Tres anillos: baja (< 10 %), media (10-40 %), alta (> 40 %)
+    mascara_baja  = distancia_norm <= 0.10
+    mascara_media = (distancia_norm > 0.10) & (distancia_norm <= 0.40)
+    mascara_alta  = distancia_norm > 0.40
+
+    energia_total = float(np.sum(magnitud**2)) + 1e-12
+    energia_baja  = float(np.sum((magnitud * mascara_baja)**2))  / energia_total
+    energia_media = float(np.sum((magnitud * mascara_media)**2)) / energia_total
+    energia_alta  = float(np.sum((magnitud * mascara_alta)**2))  / energia_total
+
+    # ── 4. Entropía del espectro ──────────────────────────────────────────────
+    mag_flat = magnitud.flatten()
+    mag_sum  = mag_flat.sum() + 1e-12
+    p_spec   = mag_flat / mag_sum
+    # Entropía de Shannon (solo términos > 0)
+    p_nz     = p_spec[p_spec > 0]
+    entropia_esp = float(-np.sum(p_nz * np.log2(p_nz)))
+
+    # ── 5. Anisotropía (energía horizontal vs vertical) ───────────────────────
+    # Franja horizontal: filas centrales (|ys| < 10 % de H)
+    franja_h = np.abs(YY) < 0.10 * H
+    # Franja vertical: columnas centrales (|xs| < 10 % de W)
+    franja_v = np.abs(XX) < 0.10 * W
+    # Excluir DC (centro)
+    dc_mask  = distancia_norm > 0.02
+
+    E_h = float(np.sum((magnitud * franja_h * dc_mask)**2)) + 1e-12
+    E_v = float(np.sum((magnitud * franja_v * dc_mask)**2)) + 1e-12
+    anisotropia = abs(E_h - E_v) / (E_h + E_v)
+
+    # ── 6. Concentración espectral (top-5 % de píxeles con mayor magnitud) ────
+    mag_sorted   = np.sort(mag_flat)[::-1]
+    n_top        = max(1, int(0.05 * len(mag_flat)))
+    umbral_top   = mag_sorted[n_top - 1]
+    concentracion = float(
+        np.sum(magnitud[magnitud >= umbral_top]**2) / energia_total
+    )
+
+    descriptores = {
+        "energia_baja":   round(energia_baja, 4),
+        "energia_media":  round(energia_media, 4),
+        "energia_alta":   round(energia_alta, 4),
+        "entropia_esp":   round(entropia_esp, 3),
+        "anisotropia":    round(anisotropia, 4),
+        "concentracion":  round(concentracion, 4),
+    }
+
+    # ── 7. Clasificación del fondo ────────────────────────────────────────────
+    # Reglas heurísticas basadas en descriptores:
+    if energia_baja > 0.70 and entropia_esp < 18 and anisotropia < 0.30:
+        clasificacion = "agua_limpia"
+        etiqueta      = "🌊 Agua limpia / tranquila"
+        descripcion   = (
+            "El espectro está muy concentrado en bajas frecuencias y la textura "
+            "es homogénea. Típico de superficies de agua calma, sin vegetación "
+            "ni sedimentos visibles."
+        )
+    elif anisotropia > 0.40 and energia_media > 0.10:
+        clasificacion = "agua_con_ondas"
+        etiqueta      = "〰️ Agua con ondas / corriente"
+        descripcion   = (
+            "Alta anisotropía espectral: las frecuencias se distribuyen "
+            "preferencialmente en una dirección. Indica patrones lineales como "
+            "olas, corrientes o reflejos direccionales."
+        )
+    elif entropia_esp > 22 and energia_media > 0.15:
+        clasificacion = "pantano_vegetacion"
+        etiqueta      = "🌿 Pantano / Vegetación"
+        descripcion   = (
+            "Entropía espectral alta y energía distribuida en frecuencias medias. "
+            "Sugiere textura caótica y orgánica, consistente con vegetación acuática, "
+            "algas, nenúfares o agua muy turbia con material orgánico."
+        )
+    elif energia_media > 0.20 and entropia_esp < 22:
+        clasificacion = "tierra_sedimento"
+        etiqueta      = "🟤 Tierra / Sedimento"
+        descripcion   = (
+            "Energía notable en frecuencias medias con entropía moderada. "
+            "Indica textura granular uniforme, típica de orillas con tierra, "
+            "arena, lodo o sedimentos expuestos."
+        )
+    else:
+        clasificacion = "fondo_mixto"
+        etiqueta      = "🔀 Fondo mixto / indefinido"
+        descripcion   = (
+            "Los descriptores espectrales no muestran un patrón dominante claro. "
+            "La escena puede combinar diferentes tipos de fondo: agua con "
+            "objetos flotantes, fondos heterogéneos o iluminación variable."
+        )
+
+    # ── 8. Figura Plotly de energía por banda ─────────────────────────────────
+    colores_banda = ["#38bdf8", "#a78bfa", "#f97316"]
+    fig_bandas = go.Figure()
+    fig_bandas.add_bar(
+        x=["Baja freq.\n(< 10 %)", "Media freq.\n(10–40 %)", "Alta freq.\n(> 40 %)"],
+        y=[
+            round(energia_baja * 100, 2),
+            round(energia_media * 100, 2),
+            round(energia_alta * 100, 2),
+        ],
+        marker_color=colores_banda,
+        text=[
+            f"{energia_baja*100:.1f}%",
+            f"{energia_media*100:.1f}%",
+            f"{energia_alta*100:.1f}%",
+        ],
+        textposition="outside",
+    )
+    fig_bandas.update_layout(
+        title=dict(text="Energía por banda de frecuencia", font=dict(size=13)),
+        xaxis_title="Banda",
+        yaxis=dict(title="Energía (%)", range=[0, 105]),
+        margin=dict(l=10, r=10, t=50, b=30),
+        height=320,
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=False,
+    )
+
+    return {
+        "descriptores":   descriptores,
+        "clasificacion":  clasificacion,
+        "etiqueta":       etiqueta,
+        "descripcion":    descripcion,
+        "espectro_rgb":   espectro_rgb,
+        "fig_bandas":     fig_bandas,
+    }
